@@ -76,12 +76,15 @@ void lw_weapon_init(LwWeapon *self,
  * weapons array sorted by id (insertion-sorted on add) so iteration via
  * getTemplates() preserves the Java order. Lookup is binary-search.
  *
- * NOTE: in the Java engine the registry is loaded once at boot and
- * never resized; the array is plenty large for the ~50 LeekWars
- * weapons currently shipped.
+ * The backing array grows as items are registered.
  */
-static LwWeapon *s_weapons[LW_WEAPONS_MAX];
+#include <limits.h>
+#include <stdint.h>
+#include <stdlib.h>
+
+static LwWeapon **s_weapons;
 static int       s_n_weapons = 0;
+static int       s_weapons_capacity;
 
 
 /* public static void addWeapon(Weapon weapon) {
@@ -89,17 +92,29 @@ static int       s_n_weapons = 0;
  *     Items.addWeapon(weapon.getId());
  * }
  */
-void lw_weapons_add_weapon(LwWeapon *weapon) {
-    if (weapon == NULL || s_n_weapons >= LW_WEAPONS_MAX) return;
+int lw_weapons_add_weapon(LwWeapon *weapon) {
+    if (weapon == NULL) return 0;
     int id = lw_weapon_get_id(weapon);
 
     /* TreeMap.put: replace if key exists. */
     for (int i = 0; i < s_n_weapons; i++) {
         if (lw_weapon_get_id(s_weapons[i]) == id) {
+            LwWeapon *old = s_weapons[i];
+            lw_item_retain(&weapon->base);
             s_weapons[i] = weapon;
+            lw_item_release(&old->base);
             lw_items_add_weapon(id);
-            return;
+            return 1;
         }
+    }
+    if (s_n_weapons == s_weapons_capacity) {
+        if (s_weapons_capacity > INT_MAX / 2) return 0;
+        int capacity = s_weapons_capacity ? s_weapons_capacity * 2 : 16;
+        if ((size_t)capacity > SIZE_MAX / sizeof(*s_weapons)) return 0;
+        LwWeapon **weapons = realloc(s_weapons, (size_t)capacity * sizeof(*weapons));
+        if (!weapons) return 0;
+        s_weapons = weapons;
+        s_weapons_capacity = capacity;
     }
 
     /* Insertion sort by id ascending (TreeMap iteration order). */
@@ -109,9 +124,11 @@ void lw_weapons_add_weapon(LwWeapon *weapon) {
         pos--;
     }
     s_weapons[pos] = weapon;
+    lw_item_retain(&weapon->base);
     s_n_weapons++;
 
     lw_items_add_weapon(id);
+    return 1;
 }
 
 
@@ -146,4 +163,12 @@ LwWeapon *lw_weapons_get_weapon_by_name(const char *name) {
 LwWeapon **lw_weapons_get_templates(int *out_n) {
     if (out_n) *out_n = s_n_weapons;
     return s_weapons;
+}
+
+void lw_weapons_clear(void) {
+    for (int i = 0; i < s_n_weapons; i++) lw_item_release(&s_weapons[i]->base);
+    free(s_weapons);
+    s_weapons = NULL;
+    s_n_weapons = 0;
+    s_weapons_capacity = 0;
 }

@@ -43,6 +43,8 @@
 
 /* Forward declarations. */
 struct LwState;
+struct LwFight;
+struct LwStatisticsManager;
 struct LwGenerator;
 struct LwEntity;
 struct LwActions;
@@ -56,7 +58,12 @@ struct LwWeapon;
 struct LwCell;
 struct LwLeekLog;
 struct LwFunctionLeekValue;
-struct LwFightListener;
+
+typedef struct LwFightListener {
+    void (*new_turn)(struct LwFightListener *self, struct LwFight *fight);
+    void *user_data;
+} LwFightListener;
+void lw_fight_listener_new_turn(LwFightListener *listener, struct LwFight *fight);
 
 
 /* ---- AI dispatch hook ------------------------------------------------
@@ -78,6 +85,11 @@ typedef int (*lw_fight_ai_dispatch_t)(struct LwFight *fight,
                                       void *ai_file,
                                       int turn,
                                       void *userdata);
+typedef int (*lw_fight_plant_ai_dispatch_t)(struct LwFight *fight,
+                                            struct LwEntity *plant,
+                                            struct LwEntity *trigger,
+                                            int64_t ai_id, int turn,
+                                            void *userdata);
 
 
 /* ---- LwFight --------------------------------------------------------- */
@@ -107,6 +119,8 @@ typedef struct LwFight {
     /* AI dispatcher (replaces Java reflection / leekscript) */
     lw_fight_ai_dispatch_t ai_dispatch;
     void                  *ai_dispatch_userdata;
+    lw_fight_plant_ai_dispatch_t plant_ai_dispatch;
+    void                  *plant_ai_dispatch_userdata;
 } LwFight;
 
 
@@ -119,6 +133,7 @@ void lw_fight_init_with_listener(LwFight *self, struct LwGenerator *generator,
 
 /* Hook the AI dispatcher.  Called by the binding before startFight. */
 void lw_fight_set_ai_dispatch(LwFight *self, lw_fight_ai_dispatch_t fn, void *userdata);
+void lw_fight_set_plant_ai_dispatch(LwFight *self, lw_fight_plant_ai_dispatch_t fn, void *userdata);
 
 /* Bind state (Fight owns a State pointer; in C the State buffer is
  * allocated by the caller). */
@@ -187,6 +202,10 @@ int  lw_fight_summon_entity_named(LwFight *self, struct LwEntity *caster,
                                   struct LwCell *target, struct LwChip *template_,
                                   struct LwFunctionLeekValue *value,
                                   const char *name);
+/* Numeric AI identifiers are opaque to the engine and remain valid in clones. */
+int lw_fight_summon_entity_with_ai_id(LwFight *self, struct LwEntity *caster,
+                                       struct LwCell *target, struct LwChip *template_,
+                                       int64_t ai_id);
 
 /* Java: public boolean generateCritical(Entity caster) {
  *   return state.getRandom().getDouble() < ((double) caster.getAgility() / 1000);

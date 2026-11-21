@@ -15,38 +15,9 @@
 #include "lw_attack.h"  /* min_range / max_range / need_los static inlines */
 #include "lw_entity.h"
 #include "lw_map.h"
+#include "lw_state.h"
 
 #include <stddef.h>
-
-
-/* ---- Forward decls for the engine APIs we call --------------------
- *
- * Map / Attack / Leek live in their own (mostly not-yet-ported)
- * headers. We only need the function signatures here; the linker
- * resolves them once those modules exist. */
-
-/* maps/Map.java */
-LwCell *lw_map_get_cell_xy(const struct LwMap *map, int x, int y);
-LwCell *lw_map_get_first_entity(const struct LwMap *map,
-                                LwCell *from, LwCell *target,
-                                int min_range, int max_range);
-struct LwState *lw_map_get_state(const struct LwMap *map);
-
-/* state/State.java -- iterating map.getState().getEntities().values()
- * Returns a contiguous array (state owns the storage) and writes the
- * count to *out_n. Iteration order matches Java's HashMap insertion
- * iteration -- the State port is responsible for preserving it. */
-struct LwLeek **lw_state_get_entities(const struct LwState *state, int *out_n);
-
-/* attack/Attack.java */
-int lw_attack_get_min_range(const struct LwAttack *self);
-int lw_attack_get_max_range(const struct LwAttack *self);
-int lw_attack_need_los    (const struct LwAttack *self);
-
-/* state/Entity.java (we use LwLeek as the caster type per spec). */
-int          lw_leek_get_team(const struct LwLeek *self);
-const char  *lw_leek_get_name(const struct LwLeek *self);
-LwCell      *lw_leek_get_cell(const struct LwLeek *self);
 
 
 /* ---- Tiny string helper (Java: String.contains) ------------------ */
@@ -249,7 +220,7 @@ static const LwAreaMask *lw_mask_for_tag(LwAreaType tag) {
  */
 static int lw_area_single_cell_get_area(const struct LwMap *map,
                                         LwCell *launchCell, LwCell *targetCell,
-                                        struct LwLeek *caster,
+                                        const struct LwEntity *caster,
                                         LwCell *out_buf, int out_cap) {
     (void)map; (void)launchCell; (void)caster;
     int n = 0;
@@ -279,14 +250,14 @@ static int lw_area_single_cell_get_area(const struct LwMap *map,
 static int lw_area_mask_get_area(const LwAreaMask *area,
                                  const struct LwMap *map,
                                  LwCell *launchCell, LwCell *targetCell,
-                                 struct LwLeek *caster,
+                                 const struct LwEntity *caster,
                                  LwCell *out_buf, int out_cap) {
     (void)launchCell; (void)caster;
     int n = 0;
     if (targetCell == NULL || area == NULL) return 0;
     int x = targetCell->x, y = targetCell->y;
     for (int i = 0; i < area->n; i++) {
-        LwCell *c = lw_map_get_cell_xy(map, x + area->cells[i][0], y + area->cells[i][1]);
+        const LwCell *c = lw_map_get_cell_xy_const(map, x + area->cells[i][0], y + area->cells[i][1]);
         if (c == NULL || !c->walkable)
             continue;
         if (n < out_cap) out_buf[n] = *c;
@@ -326,7 +297,7 @@ static int lw_area_mask_get_area(const LwAreaMask *area,
 static int lw_area_laser_line_get_area(const struct LwAttack *mAttack,
                                        const struct LwMap *map,
                                        LwCell *launchCell, LwCell *targetCell,
-                                       struct LwLeek *caster,
+                                       const struct LwEntity *caster,
                                        LwCell *out_buf, int out_cap) {
     (void)caster;
     int n = 0;
@@ -348,7 +319,7 @@ static int lw_area_laser_line_get_area(const struct LwAttack *mAttack,
     int x = launchCell->x, y = launchCell->y;
     for (int i = lw_attack_get_min_range(mAttack); i <= lw_attack_get_max_range(mAttack); i++) {
 
-        LwCell *c = lw_map_get_cell_xy(map, x + dx * i, y + dy * i);
+        const LwCell *c = lw_map_get_cell_xy_const(map, x + dx * i, y + dy * i);
         if (c == NULL) {
             break;
         }
@@ -379,11 +350,11 @@ static int lw_area_laser_line_get_area(const struct LwAttack *mAttack,
 static int lw_area_first_in_line_get_area(const struct LwAttack *mAttack,
                                           const struct LwMap *map,
                                           LwCell *launchCell, LwCell *targetCell,
-                                          struct LwLeek *caster,
+                                          const struct LwEntity *caster,
                                           LwCell *out_buf, int out_cap) {
     (void)caster;
     int n = 0;
-    LwCell *cell = lw_map_get_first_entity(map, launchCell, targetCell,
+    const LwCell *cell = lw_map_get_first_entity(map, launchCell, targetCell,
                                            lw_attack_get_min_range(mAttack),
                                            lw_attack_get_max_range(mAttack));
     if (cell != NULL) {
@@ -412,19 +383,19 @@ static int lw_area_first_in_line_get_area(const struct LwAttack *mAttack,
  */
 static int lw_area_allies_get_area(const struct LwMap *map,
                                    LwCell *launchCell, LwCell *targetCell,
-                                   struct LwLeek *caster,
+                                   const struct LwEntity *caster,
                                    LwCell *out_buf, int out_cap) {
     (void)launchCell; (void)targetCell;
     int n = 0;
     if (caster != NULL) {
         int n_entities = 0;
-        struct LwLeek **entities = lw_state_get_entities(lw_map_get_state(map), &n_entities);
+        struct LwEntity **entities = lw_state_get_entities(map->state, &n_entities);
         for (int i = 0; i < n_entities; i++) {
-            struct LwLeek *entity = entities[i];
-            if (lw_leek_get_team(entity) == lw_leek_get_team(caster)
-                && lw_str_contains(lw_leek_get_name(entity), "crystal")) continue;
-            if (lw_leek_get_cell(entity) != NULL && lw_leek_get_team(entity) == lw_leek_get_team(caster)) {
-                LwCell *c = lw_leek_get_cell(entity);
+            struct LwEntity *entity = entities[i];
+            if (lw_entity_get_team(entity) == lw_entity_get_team(caster)
+                && lw_str_contains(lw_entity_get_name(entity), "crystal")) continue;
+            if (lw_entity_get_cell(entity) != NULL && lw_entity_get_team(entity) == lw_entity_get_team(caster)) {
+                LwCell *c = lw_entity_get_cell(entity);
                 if (n < out_cap) out_buf[n] = *c;
                 n++;
             }
@@ -451,17 +422,17 @@ static int lw_area_allies_get_area(const struct LwMap *map,
  */
 static int lw_area_enemies_get_area(const struct LwMap *map,
                                     LwCell *launchCell, LwCell *targetCell,
-                                    struct LwLeek *caster,
+                                    const struct LwEntity *caster,
                                     LwCell *out_buf, int out_cap) {
     (void)launchCell; (void)targetCell;
     int n = 0;
     if (caster != NULL) {
         int n_entities = 0;
-        struct LwLeek **entities = lw_state_get_entities(lw_map_get_state(map), &n_entities);
+        struct LwEntity **entities = lw_state_get_entities(map->state, &n_entities);
         for (int i = 0; i < n_entities; i++) {
-            struct LwLeek *entity = entities[i];
-            if (lw_leek_get_cell(entity) != NULL && lw_leek_get_team(entity) != lw_leek_get_team(caster)) {
-                LwCell *c = lw_leek_get_cell(entity);
+            struct LwEntity *entity = entities[i];
+            if (lw_entity_get_cell(entity) != NULL && lw_entity_get_team(entity) != lw_entity_get_team(caster)) {
+                LwCell *c = lw_entity_get_cell(entity);
                 if (n < out_cap) out_buf[n] = *c;
                 n++;
             }
@@ -488,7 +459,7 @@ int lw_area_get_area(const LwArea *self,
                      const struct LwMap *map,
                      LwCell *cast,
                      LwCell *target,
-                     struct LwLeek *caster,
+                     const struct LwEntity *caster,
                      LwCell *out_buf,
                      int out_cap) {
     if (self == NULL) return 0;

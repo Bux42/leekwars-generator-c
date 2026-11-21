@@ -32,7 +32,7 @@ struct LwChip;
 #define LW_TEAM_MAX_FLAGS      16
 
 
-typedef struct {
+typedef struct LwTeam {
 
     int                 id;                          /* private int id */
 

@@ -23,6 +23,7 @@
 #include "lw_outcome.h"
 #include "lw_scenario.h"
 #include "lw_actions.h"
+#include "lw_state.h"
 
 
 /* ---- Forward declarations into the State / Entity / Farmer / AI / etc.
@@ -146,6 +147,8 @@ void lw_generator_init(LwGenerator *self) {
     self->error_handler_userdata = NULL;
     self->ai_dispatch = NULL;
     self->ai_dispatch_userdata = NULL;
+    self->plant_ai_dispatch = NULL;
+    self->plant_ai_dispatch_userdata = NULL;
 }
 
 
@@ -157,6 +160,13 @@ void lw_generator_set_ai_dispatch(LwGenerator *self,
     self->ai_dispatch_userdata = userdata;
 }
 
+void lw_generator_set_plant_ai_dispatch(LwGenerator *self,
+                                        lw_fight_plant_ai_dispatch_t fn,
+                                        void *userdata) {
+    if (!self) return;
+    self->plant_ai_dispatch = fn;
+    self->plant_ai_dispatch_userdata = userdata;
+}
 
 /* Stubs -- the binding owns JSON parsing and calls the per-table
  * registration functions directly. */
@@ -290,6 +300,8 @@ int lw_generator_run_scenario(LwGenerator *self,
 
     /* Hook the AI dispatcher set on the generator -> the fight. */
     lw_fight_set_ai_dispatch(fight, self->ai_dispatch, self->ai_dispatch_userdata);
+    lw_fight_set_plant_ai_dispatch(fight, self->plant_ai_dispatch,
+                                   self->plant_ai_dispatch_userdata);
 
     /* fight.getState().setRegisterManager(registerManager); */
     lw_state_set_register_manager(state, (void*)register_manager);
@@ -356,6 +368,7 @@ int lw_generator_run_scenario(LwGenerator *self,
             if (entity == NULL) continue;
 
             /* fight.getState().addEntity(t, entity); */
+            lw_state_adopt_entity(state, entity);
             lw_state_add_entity(state, t, entity);
             /* entity.setFight(fight); */
             lw_entity_set_fight(entity, fight);
@@ -411,9 +424,9 @@ int lw_generator_run_scenario(LwGenerator *self,
     lw_log_i("Generator", "Start fight...");
     int rc = lw_fight_start_fight(fight, scenario->draw_check_life);
     if (rc != 0) {
-        /* The Java catch sets outcome.exception = e; we record a
-         * placeholder message (the binding can override). */
-        lw_outcome_set_exception(outcome, "fight failed");
+        const char *message = lw_state_get_fatal_error(state)
+            ? lw_state_get_fatal_error_message(state) : "fight failed";
+        lw_outcome_set_exception(outcome, message);
         lw_log_e("Generator", "Error during fight generation!");
         return rc;
     }

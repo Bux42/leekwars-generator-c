@@ -11,6 +11,7 @@
 #include <stddef.h>
 
 #include "lw_actions.h"
+#include "lw_attack.h"
 #include "lw_cell.h"
 
 
@@ -28,6 +29,7 @@ struct LwChip;
 
 /* All these getters live in lw_entity.h (mostly static inline). */
 #include "lw_entity.h"
+#include "lw_map.h"
 extern int  lw_entity_get_summoner_fid(const struct LwEntity *self);  /* entity.getSummoner().getFId() in lw_glue.c */
 
 /* lw_weapon_get_template / lw_chip_get_template are static inline in
@@ -67,6 +69,7 @@ void lw_actions_init(LwActions *self) {
     self->stream.n_entries = 0;
     self->stream.n_extra = 0;
     self->stream.next_effect_log_id = 0;
+    self->n_operations = 0;
 }
 
 /* public Actions(Actions actions) { this.actions = new ArrayList<>(actions.actions); } */
@@ -75,6 +78,10 @@ void lw_actions_copy(LwActions *self, const LwActions *src) {
     self->stream.n_entries = src->stream.n_entries;
     self->stream.n_extra = src->stream.n_extra;
     self->stream.next_effect_log_id = src->stream.next_effect_log_id;
+    self->n_operations = src->n_operations;
+    for (int i = 0; i < src->n_operations; i++) {
+        self->operations[i] = src->operations[i];
+    }
     for (int i = 0; i < src->stream.n_entries; i++) {
         self->stream.entries[i] = src->stream.entries[i];
     }
@@ -103,6 +110,19 @@ int lw_actions_get_next_id(const LwActions *self) {
 /* public int currentID() { return actions.size() - 1; } */
 int lw_actions_current_id(const LwActions *self) {
     return self->stream.n_entries - 1;
+}
+
+int lw_actions_get_operation_count(const LwActions *self) {
+    return self == NULL ? 0 : self->n_operations;
+}
+
+int lw_actions_get_operation(const LwActions *self, int index,
+                             int *entity_id, int64_t *operations) {
+    if (self == NULL || index < 0 || index >= self->n_operations ||
+        entity_id == NULL || operations == NULL) return 0;
+    *entity_id = self->operations[index].entity_id;
+    *operations = self->operations[index].operations;
+    return 1;
 }
 
 /* public void addEntity(Entity entity, boolean critical) {
@@ -451,6 +471,15 @@ void lw_actions_log_update_effect(LwActions *self, int id, int value) {
     log_commit(self, &e);
 }
 
+void lw_actions_log_update_effect_turns(LwActions *self, int id, int turns) {
+    LwActionLog e;
+    log_entry_init(&e, LW_ACTION_UPDATE_EFFECT_TURNS);
+    e.v[0] = id;
+    e.v[1] = turns;
+    e.n_args = 2;
+    log_commit(self, &e);
+}
+
 
 /* ================================================================= */
 /* ActionRemoveEffect.java                                            */
@@ -533,18 +562,37 @@ void lw_actions_log_remove_shackles(LwActions *self, struct LwEntity *target) {
  * getJSON -> [type.value, target, pv, erosion]
  *
  * NOTE: type.value is the action code (LOST_LIFE / NOVA_DAMAGE / RETURN
- * / LIFE_DAMAGE / POISON_DAMAGE / AFTEREFFECT).  In Java the enum stores
- * AFTEREFFECT as 110 (same numeric as POISON) -- bug-for-bug, the
- * caller decides which code is passed in.
+ * / LIFE_DAMAGE / POISON_DAMAGE). Java assigns both POISON and
+ * AFTEREFFECT the action code 110.
  */
 void lw_actions_log_damage(LwActions *self, int damage_type,
                            struct LwEntity *target, int pv, int erosion) {
     LwActionLog e;
-    log_entry_init(&e, damage_type);
+    log_entry_init(&e, damage_type == LW_DAMAGE_TYPE_AFTEREFFECT
+                       ? LW_ACTION_POISON_DAMAGE : damage_type);
     e.v[0] = lw_entity_get_fid(target);
     e.v[1] = pv;
     e.v[2] = erosion;
     e.n_args = 3;
+    log_commit(self, &e);
+}
+
+void lw_actions_log_plant_awake(LwActions *self, struct LwEntity *plant,
+                                struct LwEntity *trigger, int tp) {
+    LwActionLog e;
+    log_entry_init(&e, LW_ACTION_PLANT_AWAKE);
+    e.v[0] = lw_entity_get_fid(plant);
+    e.v[1] = lw_entity_get_fid(trigger);
+    e.v[2] = tp;
+    e.n_args = 3;
+    log_commit(self, &e);
+}
+
+void lw_actions_log_plant_asleep(LwActions *self, struct LwEntity *plant) {
+    LwActionLog e;
+    log_entry_init(&e, LW_ACTION_PLANT_ASLEEP);
+    e.v[0] = lw_entity_get_fid(plant);
+    e.n_args = 1;
     log_commit(self, &e);
 }
 

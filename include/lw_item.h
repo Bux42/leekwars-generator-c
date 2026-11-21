@@ -38,6 +38,8 @@ typedef struct LwItem {
     struct LwAttack     *attack;    /* protected final Attack attack */
     const char          *name;      /* protected final String name */
     int                  template_; /* protected final int template (renamed; `template` is a C++ keyword) */
+    long                 references;
+    char                *owned_name;
 } LwItem;
 
 
@@ -50,7 +52,16 @@ static inline void lw_item_init(LwItem *self, int id, int cost,
     self->name = name;
     self->template_ = template_;
     self->attack = attack;
+    self->references = 0;
+    self->owned_name = 0;
 }
+
+/* Managed items must be heap allocated with LwItem as their first member.
+ * The initial reference belongs to the caller. Unmanaged items remain
+ * caller-owned; retain/release are no-ops for them. */
+int lw_item_manage(LwItem *self);
+void lw_item_retain(LwItem *self);
+void lw_item_release(LwItem *self);
 
 
 /* Trivial getters -- inlined to mirror Java's getId / getCost / etc. */

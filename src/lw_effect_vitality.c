@@ -27,6 +27,12 @@ void lw_effect_vitality_apply(LwEffect *self, struct LwState *state) {
     /* Soin negatif si la sagesse est negative */
     if (self->value < 0) self->value = 0;
 
+    if (lw_entity_has_state(self->target, LW_ENTITY_STATE_UNHEALABLE)) {
+        lw_actions_log_nova_vitality(lw_state_get_actions(state), self->target, self->value);
+        lw_entity_add_total_life(self->target, self->value, self->caster);
+        return;
+    }
+
     lw_actions_log_vitality(lw_state_get_actions(state), self->target, self->value);
     lw_entity_add_total_life(self->target, self->value, self->caster);
     lw_entity_add_life(self->target, self->caster, self->value);

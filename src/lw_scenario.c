@@ -13,6 +13,7 @@
  */
 #include "lw_scenario.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 
@@ -56,20 +57,44 @@ void lw_scenario_init(LwScenario *self) {
  *   entities.get(teamID).add(entity);
  * }
  */
-void lw_scenario_add_entity(LwScenario *self, int team_id, const LwEntityInfo *entity) {
-    if (entity == NULL || team_id < 0) return;
-    if (team_id >= LW_SCENARIO_MAX_TEAMS) return;
+int lw_scenario_add_entity(LwScenario *self, int team_id, const LwEntityInfo *entity) {
+    if (self == NULL || entity == NULL || team_id < 0 ||
+        entity->n_start_effects < 0 ||
+        (entity->n_start_effects > 0 && entity->start_effects == NULL) ||
+        (size_t)entity->n_start_effects > (size_t)-1 / sizeof(*entity->start_effects)) return 0;
+    if (team_id >= LW_SCENARIO_MAX_TEAMS) return 0;
 
-    /* while (entities.size() < teamID + 1) entities.add(...); */
+    int slot = self->n_entities[team_id];
+    if (slot >= LW_SCENARIO_MAX_ENTITIES_PER_TEAM) return 0;
+
+    LwEntityInfo copy = *entity;
+    copy.start_effects = NULL;
+    copy.start_effects_capacity = 0;
+    if (entity->n_start_effects > 0) {
+        copy.start_effects = malloc((size_t)entity->n_start_effects *
+                                    sizeof(*copy.start_effects));
+        if (copy.start_effects == NULL) return 0;
+        memcpy(copy.start_effects, entity->start_effects,
+               (size_t)entity->n_start_effects * sizeof(*copy.start_effects));
+        copy.start_effects_capacity = entity->n_start_effects;
+    }
+    self->entities[team_id][slot] = copy;
+    self->n_entities[team_id] = slot + 1;
     if (team_id + 1 > self->n_entity_teams) {
         self->n_entity_teams = team_id + 1;
     }
+    return 1;
+}
 
-    int slot = self->n_entities[team_id];
-    if (slot >= LW_SCENARIO_MAX_ENTITIES_PER_TEAM) return;
-
-    self->entities[team_id][slot] = *entity;
-    self->n_entities[team_id] = slot + 1;
+void lw_scenario_dispose(LwScenario *self) {
+    if (self == NULL) return;
+    for (int team = 0; team < self->n_entity_teams; team++) {
+        for (int i = 0; i < self->n_entities[team]; i++) {
+            lw_entity_info_dispose(&self->entities[team][i]);
+        }
+    }
+    self->n_entity_teams = 0;
+    memset(self->n_entities, 0, sizeof(self->n_entities));
 }
 
 

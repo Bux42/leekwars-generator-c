@@ -141,6 +141,9 @@ typedef struct {
     int  n_chips;
     int  weapons[LW_ENTITY_INFO_MAX_WEAPONS];
     int  n_weapons;
+    LwStartEffect *start_effects;
+    int  n_start_effects;
+    int  start_effects_capacity;
 
     /* Java: public Integer cell;  (Integer => may be null)
      * In C we use a pair (cell, has_cell) since 0 is a legal cell id. */
@@ -172,6 +175,10 @@ typedef struct {
 
 /* public EntityInfo() {} -- field defaults */
 void lw_entity_info_init(LwEntityInfo *self);
+/* Release dynamic start-effect storage owned by this EntityInfo. */
+void lw_entity_info_dispose(LwEntityInfo *self);
+/* Append a {type, value} start effect; returns 0 on allocation failure. */
+int lw_entity_info_add_start_effect(LwEntityInfo *self, int type, int value);
 
 /* public Entity createEntity(Generator generator, Scenario scenario, Fight fight)
  *

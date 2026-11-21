@@ -49,15 +49,16 @@ struct LwItem;
  *   DIRECT(101), NOVA(107), RETURN(108), LIFE(109), POISON(110),
  *   AFTEREFFECT(110);
  *
- * NOTE: POISON and AFTEREFFECT share value 110 in Java -- both map
- * to ACTION_POISON_DAMAGE.  Preserved verbatim. */
+ * Java keeps POISON and AFTEREFFECT distinct while both serialize as 110.
+ * The C enum needs a distinct internal value for AFTEREFFECT; action logging
+ * maps it back to LW_ACTION_POISON_DAMAGE. */
 typedef enum {
     LW_DAMAGE_TYPE_DIRECT      = 101,
     LW_DAMAGE_TYPE_NOVA        = 107,
     LW_DAMAGE_TYPE_RETURN      = 108,
     LW_DAMAGE_TYPE_LIFE        = 109,
     LW_DAMAGE_TYPE_POISON      = 110,
-    LW_DAMAGE_TYPE_AFTEREFFECT = 110
+    LW_DAMAGE_TYPE_AFTEREFFECT = -1
 } LwDamageType;
 
 
@@ -176,6 +177,9 @@ int  lw_attack_apply_on_cell(LwAttack *self,
 int  lw_attack_filter_target(int targets,
                              struct LwEntity *caster,
                              struct LwEntity *target);
+int  lw_attack_blocked_by_density(const LwAttack *self,
+                                   struct LwEntity *caster,
+                                   struct LwEntity *cell_entity);
 
 
 /* Compute the area effect attenuation : 100% at center, 50% on the border

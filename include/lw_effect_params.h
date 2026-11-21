@@ -10,7 +10,7 @@
 #ifndef LW_EFFECT_PARAMS_H
 #define LW_EFFECT_PARAMS_H
 
-typedef struct {
+typedef struct LwEffectParameters {
     int    id;          /* private final int id */
     double value1;      /* private final double value1 */
     double value2;      /* private final double value2 */

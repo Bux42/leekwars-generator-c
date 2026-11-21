@@ -46,6 +46,8 @@ typedef struct LwGenerator {
     /* AI dispatcher inherited by the Fight (binding-supplied). */
     lw_fight_ai_dispatch_t ai_dispatch;
     void                  *ai_dispatch_userdata;
+    lw_fight_plant_ai_dispatch_t plant_ai_dispatch;
+    void                  *plant_ai_dispatch_userdata;
 } LwGenerator;
 
 
@@ -66,6 +68,9 @@ void lw_generator_init(LwGenerator *self);
 void lw_generator_set_ai_dispatch(LwGenerator *self,
                                   lw_fight_ai_dispatch_t fn,
                                   void *userdata);
+void lw_generator_set_plant_ai_dispatch(LwGenerator *self,
+                                        lw_fight_plant_ai_dispatch_t fn,
+                                        void *userdata);
 
 
 /* Java: private void loadWeapons() {
@@ -99,10 +104,8 @@ void lw_generator_exception_in_fight(LwGenerator *self, struct LwFight *fight, c
  * pointer with a stable lifetime). The function returns 0 on success,
  * non-zero on error (the error message is written to outcome.exception).
  *
- * NOTE: the Java engine constructs the Fight + State on the stack /
- * heap inside this function. In C, both are owned by the LwOutcome's
- * `fight` action stream + a caller-supplied LwState/LwFight (we
- * allocate them here when state == NULL).
+ * State and fight storage are supplied by the caller. Dispose a used
+ * state with lw_state_dispose before reusing or discarding it.
  */
 int  lw_generator_run_scenario(LwGenerator *self,
                                LwScenario *scenario,

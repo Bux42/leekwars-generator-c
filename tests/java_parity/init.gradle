@@ -1,0 +1,8 @@
+gradle.projectsEvaluated {
+    def root = gradle.rootProject
+    def fixtureDir = root.findProperty('cParityFixtures')
+    if (fixtureDir == null) {
+        throw new GradleException('Missing cParityFixtures property')
+    }
+    root.sourceSets.test.java.srcDir(fixtureDir)
+}

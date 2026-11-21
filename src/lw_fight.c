@@ -22,6 +22,8 @@
 #include "lw_constants.h"
 #include "lw_actions.h"
 #include "lw_rng.h"
+#include "lw_entity.h"
+#include "lw_state.h"
 
 
 /* ---- Forward declarations into the State / Entity / Order / Team /
@@ -44,6 +46,7 @@ struct LwBulbAI;
 /* State helpers (lw_state.c) */
 struct LwOrder*   lw_state_get_order        (struct LwState *state);
 int               lw_state_get_state        (const struct LwState *state);
+int               lw_state_get_fatal_error  (const struct LwState *state);
 void              lw_state_set_state        (struct LwState *state, int s);
 int               lw_state_get_type         (const struct LwState *state);
 int               lw_state_get_context     (const struct LwState *state);
@@ -66,7 +69,7 @@ uint64_t*         lw_state_get_random       (struct LwState *state); /* returns 
 
 /* Order helpers (lw_order.c) */
 int               lw_order_get_turn   (const struct LwOrder *order);
-struct LwEntity*  lw_order_current    (struct LwOrder *order);
+struct LwEntity*  lw_order_current    (const struct LwOrder *order);
 
 /* Team helpers (lw_team.c) */
 int               lw_team_get_id          (const struct LwTeam *team);
@@ -104,7 +107,6 @@ void lw_stats_characteristics     (struct LwStatisticsManager *st, struct LwEnti
 void lw_stats_add_times           (struct LwStatisticsManager *st, struct LwEntity *entity, int64_t nanos, int64_t operations);
 void lw_stats_error               (struct LwStatisticsManager *st, struct LwEntity *entity);
 void lw_stats_end_fight           (struct LwStatisticsManager *st, struct LwEntity **values, int n_values);
-void lw_actions_add_ops_and_times(struct LwActions *actions, struct LwStatisticsManager *st);
 
 /* High-resolution timer (binding-supplied, mirrors Java System.nanoTime). */
 int64_t lw_now_nanos(void);
@@ -153,6 +155,8 @@ void lw_fight_init_with_listener(LwFight *self, struct LwGenerator *generator,
     self->state = NULL;
     self->ai_dispatch = NULL;
     self->ai_dispatch_userdata = NULL;
+    self->plant_ai_dispatch = NULL;
+    self->plant_ai_dispatch_userdata = NULL;
 }
 
 void lw_fight_set_ai_dispatch(LwFight *self, lw_fight_ai_dispatch_t fn, void *userdata) {
@@ -161,9 +165,41 @@ void lw_fight_set_ai_dispatch(LwFight *self, lw_fight_ai_dispatch_t fn, void *us
     self->ai_dispatch_userdata = userdata;
 }
 
+void lw_fight_set_plant_ai_dispatch(LwFight *self, lw_fight_plant_ai_dispatch_t fn, void *userdata) {
+    if (!self) return;
+    self->plant_ai_dispatch = fn;
+    self->plant_ai_dispatch_userdata = userdata;
+}
+
+static int lw_fight_dispatch_awakening(LwState *state, LwEntity *plant,
+                                       LwEntity *trigger, void *userdata) {
+    LwFight *fight = userdata;
+    if (!plant->has_summon_ai) return 0;
+    if (!fight->plant_ai_dispatch) {
+        lw_state_set_fatal_error(state, LW_STATE_ERROR_PLANT_DISPATCH,
+                                 "plant AI dispatcher is not configured");
+        return -1;
+    }
+    int64_t start_time = lw_now_nanos();
+    int operations = fight->plant_ai_dispatch(fight, plant, trigger, plant->summon_ai_id,
+                                               lw_fight_get_turn(fight),
+                                               fight->plant_ai_dispatch_userdata);
+    int64_t elapsed = lw_now_nanos() - start_time;
+    if (operations >= 0) {
+        lw_stats_add_times(lw_state_get_statistics(state), plant, elapsed, operations);
+        fight->execution_time += elapsed;
+        lw_entity_add_operations(plant, operations);
+    }
+    return operations;
+}
+
 void lw_fight_set_state(LwFight *self, struct LwState *state) {
     if (self == NULL) return;
+    if (self->state && self->state->plant_awakening == lw_fight_dispatch_awakening &&
+        self->state->plant_awakening_userdata == self)
+        lw_state_set_plant_awakening(self->state, NULL, NULL);
     self->state = state;
+    if (state) lw_state_set_plant_awakening(state, lw_fight_dispatch_awakening, self);
 }
 
 
@@ -318,7 +354,11 @@ int lw_fight_start_fight(LwFight *self, int draw_check_life) {
 
         /* entity.startFight(); */
         lw_entity_start_fight(entity);
+        if (lw_state_get_fatal_error(self->state)) return lw_state_get_fatal_error(self->state);
     }
+
+    lw_state_record_initial_state(self->state);
+    if (lw_state_get_fatal_error(self->state)) return lw_state_get_fatal_error(self->state);
 
     /* Log.i(TAG, "Turn 1"); */
     lw_log_i("Fight", "Turn 1");
@@ -396,8 +436,9 @@ int lw_fight_start_fight(LwFight *self, int draw_check_life) {
     }
 
     /* state.getActions().addOpsAndTimes(state.statistics); */
-    lw_actions_add_ops_and_times(lw_state_get_actions(self->state),
-                                 lw_state_get_statistics(self->state));
+    rc = lw_actions_add_ops_and_times(lw_state_get_actions(self->state),
+                                      lw_state_get_statistics(self->state));
+    if (rc != 0) return rc;
 
     return 0;
 }
@@ -522,7 +563,7 @@ int lw_fight_init_fight(LwFight *self) {
 
     /* Init the state */
     lw_state_init_fight(self->state);
-    return 0;
+    return lw_state_get_fatal_error(self->state);
 }
 
 
@@ -594,12 +635,14 @@ int lw_fight_start_turn(LwFight *self) {
 
     /* Log.i(TAG, "Start turn of " + current.getName()); -- commented out in Java */
 
+    lw_state_clear_plant_triggers(self->state, current);
     /* current.startTurn(); */
     lw_entity_start_turn(current);
+    if (lw_state_get_fatal_error(self->state)) return lw_state_get_fatal_error(self->state);
 
     if (!lw_entity_is_dead(current)) {
-        void *ai = lw_entity_get_ai(current);
-        if (ai != NULL) {
+        void *ai = current->awakening_zone > 0 ? NULL : lw_entity_get_ai(current);
+        if (current->awakening_zone <= 0 && (ai != NULL || current->has_summon_ai)) {
             /* In Java: ai.isValid() checks the leekscript compiler result.
              * In C the binding installs ai_dispatch only for valid AIs;
              * absence of ai_dispatch implies "no AI" path below. We treat
@@ -613,6 +656,8 @@ int lw_fight_start_turn(LwFight *self) {
                                                    self->ai_dispatch_userdata);
                 int64_t end_time = lw_now_nanos();
 
+                int fatal_error = lw_state_get_fatal_error(self->state);
+                if (fatal_error) return fatal_error;
                 if (operations < 0) {
                     /* AI runtime error: same handling as ai.isValid() == false. */
                     if (lw_fight_get_turn(self) == 1) {
@@ -647,13 +692,14 @@ int lw_fight_start_turn(LwFight *self) {
         }
         /* current.endTurn(); */
         lw_entity_end_turn(current);
+        if (lw_state_get_fatal_error(self->state)) return lw_state_get_fatal_error(self->state);
         /* state.getActions().log(new ActionEndTurn(current)); */
         lw_actions_log_end_turn(lw_state_get_actions(self->state), current);
     }
     /* state.endTurn(); */
     lw_state_end_turn(self->state);
 
-    return 0;
+    return lw_state_get_fatal_error(self->state);
 }
 
 
@@ -712,10 +758,10 @@ int lw_fight_summon_entity(LwFight *self, struct LwEntity *caster,
  *
  * NOTE: BulbAI construction is owned by the binding (the Python AI
  * dispatcher); we set the AI handle to the FunctionLeekValue passed in. */
-int lw_fight_summon_entity_named(LwFight *self, struct LwEntity *caster,
+static int summon_entity_with_ai(LwFight *self, struct LwEntity *caster,
                                  struct LwCell *target, struct LwChip *template_,
-                                 struct LwFunctionLeekValue *value,
-                                 const char *name) {
+                                 struct LwFunctionLeekValue *value, const char *name,
+                                 int has_ai_id, int64_t ai_id) {
     int result = lw_state_summon_entity_named(self->state, caster, target, template_, name);
     if (result > 0) {
         struct LwEntity *summon = lw_state_get_last_entity(self->state);
@@ -730,10 +776,26 @@ int lw_fight_summon_entity_named(LwFight *self, struct LwEntity *caster,
          * END_TURN for the bulb's turn (logged by fight.startTurn
          * before the AI dispatch check). */
         lw_entity_set_ai(summon, value);
+        summon->has_summon_ai = has_ai_id || value != NULL;
+        summon->summon_ai_id = has_ai_id ? ai_id : (int64_t)(uintptr_t)value;
+        lw_state_check_plant_triggers(self->state, summon, NULL, summon->cell);
+        lw_state_check_plant_planted(self->state, summon);
+        if (lw_state_get_fatal_error(self->state)) return lw_state_get_fatal_error(self->state);
     }
     return result;
 }
 
+int lw_fight_summon_entity_named(LwFight *self, struct LwEntity *caster,
+                                 struct LwCell *target, struct LwChip *template_,
+                                 struct LwFunctionLeekValue *value, const char *name) {
+    return summon_entity_with_ai(self, caster, target, template_, value, name, 0, 0);
+}
+
+int lw_fight_summon_entity_with_ai_id(LwFight *self, struct LwEntity *caster,
+                                       struct LwCell *target, struct LwChip *template_,
+                                       int64_t ai_id) {
+    return summon_entity_with_ai(self, caster, target, template_, NULL, NULL, 1, ai_id);
+}
 
 /* ----------------------------------------------------------------- */
 /* generateCritical                                                   */
@@ -757,8 +819,7 @@ int lw_fight_generate_critical(LwFight *self, struct LwEntity *caster) {
 
 /* State setter (lw_state.c) */
 void lw_state_set_statistics_manager(struct LwState *state, struct LwStatisticsManager *m);
-/* Manager-side hook (lw_statistics.c) -- writes the back-pointer onto
- * the manager's user_data so callbacks can reach the fight. */
+/* Manager-side hook stores the Java-equivalent fight back-reference. */
 void lw_stats_set_generator_fight(struct LwStatisticsManager *m, LwFight *fight);
 
 /* Java: public void setStatisticsManager(StatisticsManager statisticsManager) {

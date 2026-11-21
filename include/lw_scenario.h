@@ -87,7 +87,7 @@ typedef struct {
  *   public ObjectNode map = null;
  *   public boolean drawCheckLife = false;
  */
-typedef struct {
+typedef struct LwScenario {
     int64_t seed;                    /* Java: int seed (used as long via state.seed) */
     int     max_turns;
     int     type;                    /* LW_FIGHT_TYPE_* */
@@ -132,10 +132,11 @@ void lw_scenario_init(LwScenario *self);
  *   entities.get(teamID).add(entity);
  * }
  *
- * In C, `entity` is a value passed by pointer that we copy into the
- * scenario's storage (Java uses references but the EntityInfo itself
- * is treated as immutable post-construction). */
-void lw_scenario_add_entity(LwScenario *self, int team_id, const LwEntityInfo *entity);
+ * In C, `entity` is copied into scenario storage, including a deep copy
+ * of its start-effect list. Return 0 if the entity cannot be added. */
+int lw_scenario_add_entity(LwScenario *self, int team_id, const LwEntityInfo *entity);
+/* Release dynamic EntityInfo storage owned by the scenario. */
+void lw_scenario_dispose(LwScenario *self);
 
 /* Java: scenario.farmers.put(farmer.id, farmer); */
 void lw_scenario_add_farmer(LwScenario *self, const LwFarmerInfo *farmer);

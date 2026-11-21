@@ -16,6 +16,7 @@
 #define LW_STATISTICS_H
 
 #include <stdint.h>
+#include "lw_attack.h"
 
 /* Forward decls -- cross-module. */
 struct LwEntity;
@@ -25,10 +26,7 @@ struct LwWeapon;
 struct LwEffect;
 struct LwItem;
 struct LwCell;
-
-
-/* DamageType (Java attack/DamageType.java) -- only used as a tag here. */
-typedef int LwDamageType;
+struct LwFight;
 
 
 /* The callback table.  Each entry mirrors one Java interface method.
@@ -92,9 +90,14 @@ typedef struct LwStatisticsManager {
 
     int64_t (*get_chests)     (struct LwStatisticsManager *self);
     int64_t (*get_chests_kills)(struct LwStatisticsManager *self);
+    int (*get_operations_by_entity_count)(struct LwStatisticsManager *self);
+    int (*get_operations_by_entity_at)(struct LwStatisticsManager *self, int index,
+                                       int *entity_id, int64_t *operations);
 
     /* Backend-private state (cast in implementation). */
     void *user_data;
+    void  (*use_mp)           (struct LwStatisticsManager *self, int mp);
+    struct LwFight *generator_fight;
 } LwStatisticsManager;
 
 
@@ -102,6 +105,14 @@ typedef struct LwStatisticsManager {
  * "DefaultStatisticsManager"-style stub).  Every function pointer is
  * either NULL (no-op) or a getter returning 0. */
 void lw_statistics_init_default(LwStatisticsManager *self);
+void lw_stats_init_entity(struct LwStatisticsManager *self, struct LwEntity *entity);
+void lw_stats_characteristics(struct LwStatisticsManager *self, struct LwEntity *entity);
+void lw_stats_add_times(struct LwStatisticsManager *self, struct LwEntity *entity,
+                        int64_t elapsed_ns, int64_t operations);
+void lw_stats_error(struct LwStatisticsManager *self, struct LwEntity *entity);
+void lw_stats_end_fight(struct LwStatisticsManager *self, struct LwEntity **entities,
+                        int count);
+void lw_stats_set_generator_fight(struct LwStatisticsManager *self, struct LwFight *fight);
 
 
 /* ---- Convenience dispatch helpers ----------------------------------- *

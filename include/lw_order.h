@@ -26,7 +26,7 @@ struct LwState;
  *   private int position = 0;
  *   private int turn = 1;
  */
-typedef struct {
+typedef struct LwOrder {
     struct LwEntity *leeks[LW_ORDER_MAX_ENTITIES];
     int              n_leeks;
     int              position;

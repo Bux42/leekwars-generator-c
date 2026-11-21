@@ -16,16 +16,36 @@
 #include "lw_map.h"
 #include "lw_team.h"
 #include "lw_entity.h"
+#include "lw_bulb_template.h"
+#include "lw_pathfinding.h"
 
 #include <math.h>
+#include <limits.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>     /* malloc/calloc/free */
 #include <string.h>
 
 
-/* Forward decl for the effect-pool allocator (defined in lw_glue.c).
- * Used by clone_remap_effect below. */
-LwEffect* lw_state_alloc_effect(struct LwState *state);
+typedef struct LwOwnedEffect {
+    struct LwOwnedEffect *next;
+    const LwEffect *clone_source;
+    LwEffect effect;
+} LwOwnedEffect;
+
+LwEffect* lw_state_alloc_effect(struct LwState *state) {
+    if (!state) return NULL;
+    LwOwnedEffect *node = calloc(1, sizeof(*node));
+    if (!node) {
+        state->fatal_error = LW_STATE_ERROR_EFFECT_ALLOCATION;
+        snprintf(state->fatal_error_message, sizeof(state->fatal_error_message),
+                 "cannot allocate effect");
+        return NULL;
+    }
+    node->next = state->owned_effects;
+    state->owned_effects = node;
+    return &node->effect;
+}
 
 
 /* ---- Forward declarations of cross-module helpers ------------------ *
@@ -34,6 +54,7 @@ LwEffect* lw_state_alloc_effect(struct LwState *state);
  * (being ported in parallel).  We declare just the signatures the
  * State port needs.
  */
+void lw_stats_error(struct LwStatisticsManager *statistics, struct LwEntity *entity);
 
 /* state/Entity.java */
 int    lw_entity_get_fid          (const struct LwEntity *e);
@@ -93,7 +114,7 @@ int    lw_team_contains_chest     (const struct LwTeam *t);
 int    lw_team_get_summon_count   (const struct LwTeam *t);
 int    lw_team_get_life           (const struct LwTeam *t);
 double lw_team_get_life_ratio     (const struct LwTeam *t);
-void   lw_team_apply_cooldown     (struct LwTeam *t);
+void   lw_team_apply_cool_down    (struct LwTeam *t);
 void   lw_team_add_cooldown       (struct LwTeam *t, struct LwChip *chip, int cooldown);
 int    lw_team_has_cooldown       (const struct LwTeam *t, int chip_id);
 int    lw_team_get_cooldown       (const struct LwTeam *t, int chip_id);
@@ -104,8 +125,6 @@ struct LwMap* lw_map_generate_map (struct LwState *state, int context, int width
                                    int obstacle_count, struct LwTeam **teams, int n_teams,
                                    void *custom_map);
 /* lw_map_clone signature lives in lw_map.h (3-arg in-place variant). */
-struct LwCell* lw_map_get_cell    (const struct LwMap *m, int id);
-int    lw_map_can_use_attack      (struct LwMap *m, struct LwCell *from, struct LwCell *to, struct LwAttack *atk);
 int    lw_map_move_entity         (struct LwMap *m, struct LwEntity *e, struct LwCell *to);
 void   lw_map_remove_entity       (struct LwMap *m, struct LwEntity *e);
 void   lw_map_set_entity          (struct LwMap *m, struct LwEntity *e, struct LwCell *cell);
@@ -227,12 +246,17 @@ void lw_state_init(LwState *self) {
 
     self->rng_n              = 0;
     self->n_teams            = 0;
+    self->owned_entities     = NULL;
+    self->owned_effects      = NULL;
+    self->owns_map           = 0;
     self->n_initial_order    = 0;
     self->m_next_entity_id   = 0;
     self->m_winteam          = -1;
     self->n_entities         = 0;
     self->m_id               = 0;
     self->m_state            = LW_FIGHT_STATE_INIT;
+    self->fatal_error        = 0;
+    self->fatal_error_message[0] = '\0';
 
     lw_order_init(&self->order);
 
@@ -260,12 +284,79 @@ void lw_state_init(LwState *self) {
 
     self->draw_check_life    = 0;
     self->listener           = NULL;
+    self->awakening_plant    = NULL;
+    self->cloned_awakening   = 0;
+    self->plant_awakening    = NULL;
+    self->plant_awakening_userdata = NULL;
 
-    for (int i = 0; i < LW_STATE_MAX_TEAMS; i++) self->teams[i] = NULL;
+    for (int i = 0; i < LW_STATE_MAX_TEAMS; i++) {
+        self->teams[i] = NULL;
+        self->owned_teams[i] = 0;
+    }
     for (int i = 0; i < LW_STATE_MAX_ENTITIES; i++) {
         self->m_entities[i] = NULL;
         self->initial_order[i] = NULL;
     }
+}
+
+void lw_state_adopt_entity(LwState *self, struct LwEntity *entity) {
+    entity->owned_next = self->owned_entities;
+    self->owned_entities = entity;
+}
+
+static void detach_owned_effect(LwEntity *entity, LwEffect *effect, int launched) {
+    if (!entity) return;
+    LwEffect **effects = launched ? entity->launched_effects : entity->effects;
+    int *count = launched ? &entity->n_launched_effects : &entity->n_effects;
+    int removed = 0;
+    for (int i = 0; i < *count;) {
+        if (effects[i] == effect) {
+            for (int j = i; j + 1 < *count; j++) effects[j] = effects[j + 1];
+            effects[--*count] = NULL;
+            removed = 1;
+        } else {
+            i++;
+        }
+    }
+    if (removed && !launched) lw_entity_update_buff_stats(entity);
+}
+
+void lw_state_dispose(LwState *self) {
+    if (!self) return;
+    LwOwnedEffect *effect = self->owned_effects;
+    while (effect) {
+        LwOwnedEffect *next = effect->next;
+        detach_owned_effect(effect->effect.target, &effect->effect, 0);
+        detach_owned_effect(effect->effect.caster, &effect->effect, 1);
+        if (effect->effect.attack) lw_item_release(lw_attack_get_item(effect->effect.attack));
+        free(effect);
+        effect = next;
+    }
+    self->owned_effects = NULL;
+    struct LwEntity *entity = self->owned_entities;
+    while (entity) {
+        struct LwEntity *next = entity->owned_next;
+        lw_entity_dispose(entity);
+        free(entity);
+        entity = next;
+    }
+    self->owned_entities = NULL;
+    if (self->owns_map) free(self->map);
+    self->map = NULL;
+    self->owns_map = 0;
+    for (int i = 0; i < self->n_teams; i++) {
+        if (self->owned_teams[i]) free(self->teams[i]);
+        self->teams[i] = NULL;
+        self->owned_teams[i] = 0;
+    }
+    self->n_teams = 0;
+    for (int i = 0; i < LW_STATE_MAX_ENTITIES; i++) {
+        self->m_entities[i] = NULL;
+        self->initial_order[i] = NULL;
+    }
+    self->n_entities = 0;
+    self->n_initial_order = 0;
+    lw_order_init(&self->order);
 }
 
 
@@ -295,13 +386,12 @@ void lw_state_init(LwState *self) {
  *   - LwWeapon, LwChip, LwAttack: GLOBAL registries, shared by all
  *     states. Pointers are copied as-is.
  *   - LwEntity: each one is heap-allocated per state; we calloc a
- *     fresh array and lw_entity_init_copy from src. Then we walk
+ *     fresh array and snapshot from src. Then we walk
  *     each new entity and remap any pointer that referenced the old
  *     state's objects (cell -> new map's same-id cell, m_owner -> new
  *     entity by fid, state -> new state).
- *   - LwEffect: pulled from a global pool (lw_state_alloc_effect);
- *     we re-allocate fresh slots for the clone and remap their
- *     caster/target/attack pointers.
+ *   - LwEffect: allocated per state, with shared effect identity
+ *     preserved between the target and caster in the clone.
  *   - LwMap, LwTeam: heap-allocated per state. Map cells are POD;
  *     entity_at_cell stores fids (stable across clones) so just
  *     memcpy. Team entities[] needs fid-based pointer fixup.
@@ -316,8 +406,8 @@ static struct LwCell*   clone_state_lookup_cell_by_id   (LwState *state, int cel
 static struct LwEffect* clone_remap_effect              (LwState *new_state, const struct LwEffect *src);
 
 
-void lw_state_clone(LwState *self, const LwState *src) {
-    if (!self || !src) return;
+int lw_state_clone(LwState *self, const LwState *src) {
+    if (!self || !src || self == src) return 0;
 
     /* Start from a clean slate: zero-init scalars + pointer slots. */
     lw_state_init(self);
@@ -326,6 +416,8 @@ void lw_state_clone(LwState *self, const LwState *src) {
 
     self->m_id                = src->m_id;
     self->m_state             = src->m_state;
+    self->fatal_error         = src->fatal_error;
+    memcpy(self->fatal_error_message, src->fatal_error_message, sizeof(self->fatal_error_message));
     self->rng_n               = src->rng_n;
     self->statistics          = src->statistics;        /* shared (opaque) */
     self->register_manager    = src->register_manager;  /* shared (opaque) */
@@ -351,7 +443,7 @@ void lw_state_clone(LwState *self, const LwState *src) {
     /* ---- 2. Allocate + deep-copy entities ---------------------------- */
     /* We need entities to exist before the map clone (so cell.entity_at_cell
      * fids resolve), before teams, and before order/initial_order remap.
-     * lw_entity_init_copy copies the bulk of the entity but leaves
+     * lw_entity_init_snapshot copies the entity but leaves
      * pointer fields (cell, m_owner, state, effects[]) referencing the
      * SOURCE state's objects -- we fix them up below. */
     self->n_entities = src->n_entities;
@@ -359,8 +451,12 @@ void lw_state_clone(LwState *self, const LwState *src) {
         struct LwEntity *src_e = src->m_entities[i];
         if (!src_e) { self->m_entities[i] = NULL; continue; }
         struct LwEntity *new_e = (struct LwEntity*) calloc(1, sizeof(struct LwEntity));
-        if (!new_e) { self->m_entities[i] = NULL; continue; }
-        lw_entity_init_copy(new_e, src_e);
+        if (!new_e) goto allocation_failure;
+        if (!lw_entity_init_snapshot(new_e, src_e)) {
+            free(new_e);
+            goto allocation_failure;
+        }
+        lw_state_adopt_entity(self, new_e);
         self->m_entities[i] = new_e;
     }
 
@@ -369,10 +465,10 @@ void lw_state_clone(LwState *self, const LwState *src) {
      * entity_at_cell holds fids, stable across clones. */
     if (src->map) {
         struct LwMap *new_map = (struct LwMap*) calloc(1, sizeof(struct LwMap));
-        if (new_map) {
-            lw_map_clone(new_map, src->map, self);
-            self->map = new_map;
-        }
+        if (!new_map) goto allocation_failure;
+        lw_map_clone(new_map, src->map, self);
+        self->map = new_map;
+        self->owns_map = 1;
     }
 
     /* ---- 4. Remap entity pointer fields to the new state ------------ */
@@ -402,23 +498,17 @@ void lw_state_clone(LwState *self, const LwState *src) {
         } else {
             e->m_owner = NULL;
         }
+        e->awakening_trigger = src_e && src_e->awakening_trigger
+            ? clone_state_lookup_entity_by_fid(self, lw_entity_get_fid(src_e->awakening_trigger))
+            : NULL;
 
-        /* effects[] / launched_effects[]: lw_entity_init_copy explicitly
-         * does NOT copy these (Java behavior). They start empty here.
+        /* effects[] / launched_effects[] start empty here.
          * We fill them in below from the source's effects, with
          * caster/target pointer remapping. */
         e->n_effects = 0;
         e->n_launched_effects = 0;
 
-        /* AI / logs / fight / ai_file / m_register: opaque; the
-         * lw_entity_init_copy does NOT copy these. They start NULL,
-         * which matches Java's `new Leek(src)` behavior of leaving
-         * them unset on the copy. The fight runner re-attaches them
-         * via Entity.setState/setAI hooks. For replay/MCTS, we don't
-         * call those hooks again; the engine reads them via
-         * lw_entity_get_ai etc. so they need to be valid pointers or
-         * NULL.  Leaving NULL is safe -- AI dispatch code path
-         * already checks for NULL and is a no-op when not set. */
+        /* Opaque AI, log, fight and register pointers are not shared. */
     }
 
     /* ---- 5. Re-clone effects on each entity ------------------------- */
@@ -433,6 +523,7 @@ void lw_state_clone(LwState *self, const LwState *src) {
         /* effects[] -- effects acting ON this entity */
         for (int k = 0; k < src_e->n_effects; k++) {
             struct LwEffect *new_eff = clone_remap_effect(self, src_e->effects[k]);
+            if (src_e->effects[k] && !new_eff) goto allocation_failure;
             if (new_eff && new_e->n_effects < LW_ENTITY_MAX_EFFECTS) {
                 new_e->effects[new_e->n_effects++] = new_eff;
             }
@@ -440,6 +531,7 @@ void lw_state_clone(LwState *self, const LwState *src) {
         /* launched_effects[] -- effects this entity launched on others */
         for (int k = 0; k < src_e->n_launched_effects; k++) {
             struct LwEffect *new_eff = clone_remap_effect(self, src_e->launched_effects[k]);
+            if (src_e->launched_effects[k] && !new_eff) goto allocation_failure;
             if (new_eff && new_e->n_launched_effects < LW_ENTITY_MAX_LAUNCHED_EFFECTS) {
                 new_e->launched_effects[new_e->n_launched_effects++] = new_eff;
             }
@@ -454,7 +546,7 @@ void lw_state_clone(LwState *self, const LwState *src) {
     for (int i = 0; i < src->n_teams; i++) {
         if (!src->teams[i]) { self->teams[i] = NULL; continue; }
         LwTeam *new_team = lw_team_clone(src->teams[i]);
-        if (!new_team) { self->teams[i] = NULL; continue; }
+        if (!new_team) goto allocation_failure;
         /* src->teams[i] is `struct LwTeam *` per the in-state declaration
          * but the typedef LwTeam is what carries the field layout; cast
          * the source pointer through the typedef so MSVC accepts the
@@ -470,6 +562,7 @@ void lw_state_clone(LwState *self, const LwState *src) {
             }
         }
         self->teams[i] = new_team;
+        self->owned_teams[i] = 1;
     }
 
     /* ---- 7. Initial order: same-fid lookup ------------------------- */
@@ -492,6 +585,17 @@ void lw_state_clone(LwState *self, const LwState *src) {
     /* lw_order_copy resets `turn` to 1 to mirror a Java bug; restore
      * the actual turn so MCTS rollouts continue from the snapshot. */
     self->order.turn = src->order.turn;
+    if (src->awakening_plant) {
+        self->awakening_plant = clone_state_lookup_entity_by_fid(
+            self, lw_entity_get_fid(src->awakening_plant));
+        if (!self->awakening_plant) goto allocation_failure;
+        self->cloned_awakening = 1;
+    }
+    return 1;
+
+allocation_failure:
+    lw_state_dispose(self);
+    return 0;
 }
 
 
@@ -519,10 +623,15 @@ static struct LwCell* clone_state_lookup_cell_by_id(LwState *state, int cell_id)
  * fails. */
 static struct LwEffect* clone_remap_effect(LwState *new_state, const struct LwEffect *src) {
     if (!src || !new_state) return NULL;
+    for (LwOwnedEffect *node = new_state->owned_effects; node; node = node->next) {
+        if (node->clone_source == src) return &node->effect;
+    }
     struct LwEffect *dst = lw_state_alloc_effect(new_state);
     if (!dst) return NULL;
+    new_state->owned_effects->clone_source = src;
     /* Plain memcpy of the effect struct. */
     memcpy(dst, src, sizeof(LwEffect));
+    if (dst->attack) lw_item_retain(lw_attack_get_item(dst->attack));
     /* Remap caster/target. attack is a global registry pointer
      * (LwWeapon/LwChip's bundled LwAttack), so it stays as-is. */
     if (src->caster) {
@@ -537,34 +646,8 @@ static struct LwEffect* clone_remap_effect(LwState *new_state, const struct LwEf
 }
 
 
-/* Free the heap allocations attached to a cloned state. Call this
- * only on states produced by lw_state_clone -- never on states owned
- * by a Generator (those are freed by lw_generator_dispose).
- *
- * Effects come from the global pool, so we don't free them
- * individually -- the pool wraps around. Map and entities are heap
- * blocks we owned. Teams ditto. */
 void lw_state_free_clone(LwState *self) {
-    if (!self) return;
-    if (self->map) {
-        free(self->map);
-        self->map = NULL;
-    }
-    for (int i = 0; i < self->n_entities; i++) {
-        if (self->m_entities[i]) {
-            free(self->m_entities[i]);
-            self->m_entities[i] = NULL;
-        }
-    }
-    self->n_entities = 0;
-    for (int i = 0; i < self->n_teams; i++) {
-        if (self->teams[i]) {
-            free(self->teams[i]);
-            self->teams[i] = NULL;
-        }
-    }
-    self->n_teams = 0;
-    /* effects[] live in the global pool; nothing to free. */
+    lw_state_dispose(self);
 }
 
 
@@ -582,6 +665,13 @@ LwActions*       lw_state_get_actions (LwState *self)         { return &self->ac
 LwOrder*         lw_state_get_order   (LwState *self)         { return &self->order; }
 
 int  lw_state_get_state    (const LwState *self) { return self->m_state; }
+int lw_state_get_fatal_error(const LwState *self) { return self->fatal_error; }
+const char *lw_state_get_fatal_error_message(const LwState *self) { return self->fatal_error_message; }
+void lw_state_set_fatal_error(LwState *self, int error, const char *message) {
+    if (!self || !error || self->fatal_error) return;
+    self->fatal_error = error;
+    snprintf(self->fatal_error_message, sizeof(self->fatal_error_message), "%s", message);
+}
 void lw_state_set_state    (LwState *self, int state) { self->m_state = state; }
 
 int  lw_state_get_turn     (const LwState *self) { return ((LwState*)self)->order.turn; }
@@ -657,6 +747,7 @@ void lw_state_add_entity(LwState *self, int t, struct LwEntity *entity) {
     while (self->n_teams < team + 1) {
         if (self->n_teams >= LW_STATE_MAX_TEAMS) return;
         self->teams[self->n_teams] = lw_team_create();
+        self->owned_teams[self->n_teams] = 1;
         self->n_teams++;
     }
     lw_entity_set_team(entity, team);
@@ -821,6 +912,162 @@ int lw_state_get_all_entities(LwState *self, int get_deads,
     return n_out;
 }
 
+void lw_state_set_plant_awakening(LwState *self, lw_plant_awakening_t fn, void *userdata) {
+    self->plant_awakening = fn;
+    self->plant_awakening_userdata = userdata;
+}
+
+int lw_state_can_act(const LwState *self, const LwEntity *entity) {
+    return entity && (lw_order_current(&self->order) == entity ||
+           (self->awakening_plant == entity && !lw_entity_is_dead(entity)));
+}
+
+int lw_state_finish_cloned_awakening(LwState *self) {
+    if (!self || !self->cloned_awakening || !self->awakening_plant) return 0;
+    LwEntity *plant = self->awakening_plant;
+    plant->awakening_trigger = NULL;
+    self->awakening_plant = NULL;
+    self->cloned_awakening = 0;
+    lw_actions_log_plant_asleep(&self->actions, plant);
+    return 1;
+}
+
+static int plant_was_awakened_by(const LwEntity *plant, const LwEntity *trigger) {
+    int fid = lw_entity_get_fid(trigger);
+    for (int i = 0; i < plant->n_awakened_by; i++) {
+        if (plant->awakened_by[i] == fid) return 1;
+    }
+    return 0;
+}
+
+static int plant_mark_awakened(LwState *self, LwEntity *plant, LwEntity *trigger) {
+    if (plant->n_awakened_by == plant->awakened_by_capacity) {
+        int capacity;
+        if (plant->awakened_by_capacity > INT_MAX / 2) goto failure;
+        capacity = plant->awakened_by_capacity ? plant->awakened_by_capacity * 2 : 8;
+        if ((size_t)capacity > SIZE_MAX / sizeof(*plant->awakened_by)) goto failure;
+        int *ids = realloc(plant->awakened_by, (size_t)capacity * sizeof(*ids));
+        if (!ids) goto failure;
+        plant->awakened_by = ids;
+        plant->awakened_by_capacity = capacity;
+    }
+    plant->awakened_by[plant->n_awakened_by++] = lw_entity_get_fid(trigger);
+    return 1;
+failure:
+    self->fatal_error = LW_STATE_ERROR_PLANT_ALLOCATION;
+    snprintf(self->fatal_error_message, sizeof(self->fatal_error_message),
+             "cannot track plant awakening");
+    return 0;
+}
+
+static void awake_plant(LwState *self, LwEntity *plant, LwEntity *trigger) {
+    if (plant_was_awakened_by(plant, trigger) || !plant_mark_awakened(self, plant, trigger)) return;
+    lw_entity_apply_cool_down(plant);
+    plant->used_tp = 0;
+    lw_actions_log_plant_awake(&self->actions, plant, trigger, lw_entity_get_tp(plant));
+    if (self->plant_awakening) {
+        self->awakening_plant = plant;
+        plant->awakening_trigger = trigger;
+        int operations = self->plant_awakening(self, plant, trigger, self->plant_awakening_userdata);
+        plant->awakening_trigger = NULL;
+        self->awakening_plant = NULL;
+        if (operations < 0 && !self->fatal_error) {
+            lw_actions_log_ai_error(&self->actions, plant);
+            lw_stats_error(self->statistics, plant);
+        }
+    } else if (plant->has_summon_ai) {
+        self->fatal_error = LW_STATE_ERROR_PLANT_DISPATCH;
+        snprintf(self->fatal_error_message, sizeof(self->fatal_error_message),
+                 "plant AI dispatcher is not configured");
+    }
+    lw_actions_log_plant_asleep(&self->actions, plant);
+}
+
+void lw_state_check_plant_triggers(LwState *self, LwEntity *entity,
+                                   LwCell *from, LwCell *to) {
+    if (!entity || !to || lw_entity_is_dead(entity) || self->awakening_plant || self->fatal_error) return;
+    LwEntity *plants[LW_STATE_MAX_ENTITIES];
+    int n = lw_state_get_all_entities(self, 0, plants, LW_STATE_MAX_ENTITIES);
+    for (int i = 0; i < n && !self->fatal_error; i++) {
+        LwEntity *plant = plants[i];
+        LwCell *cell = lw_entity_get_cell(plant);
+        if (plant == entity || plant->awakening_zone <= 0 || lw_entity_is_dead(plant) || !cell) continue;
+        if (lw_pathfinding_get_case_distance(to, cell) > plant->awakening_zone) continue;
+        if (from && lw_pathfinding_get_case_distance(from, cell) <= plant->awakening_zone) continue;
+        awake_plant(self, plant, entity);
+    }
+}
+
+void lw_state_check_plant_planted(LwState *self, LwEntity *plant) {
+    if (!plant || plant->awakening_zone <= 0 || lw_entity_is_dead(plant) ||
+        self->awakening_plant || self->fatal_error || !plant->cell) return;
+    LwEntity *entities[LW_STATE_MAX_ENTITIES];
+    int n = lw_state_get_all_entities(self, 0, entities, LW_STATE_MAX_ENTITIES);
+    LwCell *plant_cell = plant->cell;
+    for (int i = 0; i < n && !self->fatal_error; i++) {
+        LwEntity *entity = entities[i];
+        if (entity == plant || lw_entity_is_dead(entity) || !entity->cell) continue;
+        if (lw_pathfinding_get_case_distance(entity->cell, plant_cell) <= plant->awakening_zone)
+            awake_plant(self, plant, entity);
+    }
+}
+
+void lw_state_clear_plant_triggers(LwState *self, LwEntity *entity) {
+    if (!entity) return;
+    LwEntity *entities[LW_STATE_MAX_ENTITIES];
+    int n = lw_state_get_all_entities(self, 1, entities, LW_STATE_MAX_ENTITIES);
+    int fid = lw_entity_get_fid(entity);
+    for (int i = 0; i < n; i++) {
+        LwEntity *plant = entities[i];
+        if (plant->awakening_zone <= 0) continue;
+        for (int j = 0; j < plant->n_awakened_by; j++) {
+            if (plant->awakened_by[j] == fid) {
+                memmove(&plant->awakened_by[j], &plant->awakened_by[j + 1],
+                        (size_t)(plant->n_awakened_by - j - 1) * sizeof(*plant->awakened_by));
+                plant->n_awakened_by--;
+                break;
+            }
+        }
+    }
+}
+
+static void check_plant_triggers_along(LwState *self, LwEntity *entity,
+                                       LwCell *start, LwCell *end) {
+    if (!entity || !start || !end || start == end) return;
+    int dx = (end->x > start->x) - (end->x < start->x);
+    int dy = (end->y > start->y) - (end->y < start->y);
+    LwCell *line[LW_MAP_MAX_CELLS];
+    int n = 0;
+    LwCell *current = start;
+    int distance = lw_pathfinding_get_case_distance(start, end);
+    while (distance-- > 0 && current != end && n < LW_MAP_MAX_CELLS) {
+        current = lw_cell_next(current, self->map, dx, dy);
+        if (!current) break;
+        line[n++] = current;
+    }
+    if (current != end) {
+        lw_state_check_plant_triggers(self, entity, start, end);
+        return;
+    }
+    LwCell *from = start;
+    for (int i = 0; i < n && !self->fatal_error; i++) {
+        lw_state_check_plant_triggers(self, entity, from, line[i]);
+        from = line[i];
+    }
+}
+
+static int enters_plant_zone(LwEntity *const *plants, int count,
+                             LwEntity *entity, LwCell *from, LwCell *to) {
+    for (int i = 0; i < count; i++) {
+        LwEntity *plant = plants[i];
+        LwCell *cell = plant->cell;
+        if (!cell || lw_entity_is_dead(plant) || plant_was_awakened_by(plant, entity)) continue;
+        if (lw_pathfinding_get_case_distance(to, cell) <= plant->awakening_zone &&
+            lw_pathfinding_get_case_distance(from, cell) > plant->awakening_zone) return 1;
+    }
+    return 0;
+}
+
 
 /* Java: public List<Team> getTeams() { return teams; } */
 struct LwTeam** lw_state_get_teams(LwState *self, int *out_n) {
@@ -953,6 +1200,22 @@ int lw_state_generate_critical(LwState *self, struct LwEntity *caster) {
  * compute; loop entities (alive→addEntity, addEntity to actions);
  * actions.addMap; cooldowns from chip templates; ActionStartFight;
  * Colossus init effect; transition to RUNNING.) */
+static void apply_colossus_multiplier(LwState *self, LwEntity *entity) {
+    lw_effect_create_effect(self, LW_EFFECT_TYPE_MULTIPLY_STATS, -1, 1.0,
+                            (double)self->colossus_multiplier, 0.0, 0,
+                            entity, entity, NULL, 0.0, 0, 0, 1, 0,
+                            LW_MODIFIER_IRREDUCTIBLE);
+}
+
+static void apply_start_effects(LwState *self, LwEntity *entity) {
+    for (int i = 0; i < entity->n_start_effects; i++) {
+        const LwStartEffect *effect = &entity->start_effects[i];
+        lw_effect_create_effect(self, effect->type, -1, 1.0, effect->value, 0.0,
+                                0, entity, entity, NULL, 0.0, 1, 0, 1, 0,
+                                LW_MODIFIER_IRREDUCTIBLE);
+    }
+}
+
 void lw_state_init_fight(LwState *self) {
 
     // Create level/skin list
@@ -962,6 +1225,7 @@ void lw_state_init_fight(LwState *self) {
 
     self->map = lw_map_generate_map(self, self->context, 18, 18, obstacle_count,
                                     self->teams, self->n_teams, self->custom_map);
+    self->owns_map = 1;
 
     // Initialize positions and game order
     LwStartOrder bootorder;
@@ -984,7 +1248,6 @@ void lw_state_init_fight(LwState *self) {
         if (lw_entity_is_alive(e)) {
             lw_order_add_entity(&self->order, e);
         }
-        lw_actions_add_entity(&self->actions, e, 0);
         if (self->n_initial_order < LW_STATE_MAX_ENTITIES) {
             self->initial_order[self->n_initial_order++] = e;
         }
@@ -994,9 +1257,6 @@ void lw_state_init_fight(LwState *self) {
             lw_stats_chest(self->statistics);
         }
     }
-
-    // On ajoute la map
-    lw_actions_add_map(&self->actions, self->map);
 
     // Cooldowns initiaux
     int n_chips = lw_chips_template_count();
@@ -1014,7 +1274,15 @@ void lw_state_init_fight(LwState *self) {
         }
     }
 
-    // Puis on ajoute le startfight
+    self->m_state = LW_FIGHT_STATE_RUNNING;
+}
+
+void lw_state_record_initial_state(LwState *self) {
+    for (int i = 0; i < self->n_initial_order; i++) {
+        lw_actions_add_entity(&self->actions, self->initial_order[i], 0);
+    }
+    lw_actions_add_map(&self->actions, self->map);
+
     int t1 = self->n_teams > 0 ? lw_team_size(self->teams[0]) : 0;
     int t2 = self->n_teams > 1 ? lw_team_size(self->teams[1]) : 0;
     lw_actions_log_start_fight(&self->actions, t1, t2);
@@ -1028,13 +1296,13 @@ void lw_state_init_fight(LwState *self) {
         struct LwEntity **es = lw_team_get_entities(self->teams[1], &n);
         for (int i = 0; i < n; i++) {
             struct LwEntity *e = es[i];
-            lw_effect_create_effect(self, LW_EFFECT_TYPE_MULTIPLY_STATS, -1, 1.0,
-                                    (double)self->colossus_multiplier, 0.0, 0,
-                                    e, e, NULL, 0.0, 0, 0, 1, 0, LW_MODIFIER_IRREDUCTIBLE);
+            apply_colossus_multiplier(self, e);
         }
     }
 
-    self->m_state = LW_FIGHT_STATE_RUNNING;
+    for (int i = 0; i < self->n_initial_order; i++) {
+        apply_start_effects(self, self->initial_order[i]);
+    }
 }
 
 
@@ -1129,16 +1397,14 @@ void lw_state_end_turn(LwState *self) {
                     for (int i = 0; i < n; i++) {
                         struct LwEntity *e = es[i];
                         if (!lw_entity_is_dead(e)) {
-                            lw_effect_create_effect(self, LW_EFFECT_TYPE_MULTIPLY_STATS, -1, 1.0,
-                                                    (double)self->colossus_multiplier, 0.0, 0,
-                                                    e, e, NULL, 0.0, 0, 0, 1, 0, LW_MODIFIER_IRREDUCTIBLE);
+                            apply_colossus_multiplier(self, e);
                         }
                     }
                 }
             }
 
             for (int t = 0; t < self->n_teams; t++) {
-                lw_team_apply_cooldown(self->teams[t]);
+                lw_team_apply_cool_down(self->teams[t]);
             }
         }
     }
@@ -1169,6 +1435,7 @@ void lw_state_start_turn(LwState *self) {
     lw_actions_log_entity_turn(&self->actions, current);
     // Log.i(TAG, "Start turn of " + current.getName());
 
+    lw_state_clear_plant_triggers(self, current);
     lw_entity_start_turn_proc(current);
 
     if (!lw_entity_is_dead(current)) {
@@ -1298,6 +1565,8 @@ void lw_state_compute_winner(LwState *self, int drawCheckLife) {
  */
 int lw_state_set_weapon(LwState *self, struct LwEntity *entity, struct LwWeapon *weapon) {
 
+    if (lw_entity_has_state(entity, LW_ENTITY_STATE_AMPUTATED)) return 0;
+
     // 1 TP required
     if (lw_entity_get_tp(entity) <= 0) return 0;
 
@@ -1347,9 +1616,13 @@ int lw_state_set_weapon(LwState *self, struct LwEntity *entity, struct LwWeapon 
  */
 int lw_state_use_weapon(LwState *self, struct LwEntity *launcher, struct LwCell *target) {
 
-    if (lw_order_current(&self->order) != launcher || lw_entity_get_weapon(launcher) == NULL) {
+    if (!lw_state_can_act(self, launcher)) {
         return LW_ATTACK_USE_INVALID_TARGET;
     }
+    if (lw_entity_has_state(launcher, LW_ENTITY_STATE_AMPUTATED)) {
+        return LW_ATTACK_USE_INVALID_STATE;
+    }
+    if (lw_entity_get_weapon(launcher) == NULL) return LW_ATTACK_USE_INVALID_TARGET;
 
     struct LwWeapon *weapon = lw_entity_get_weapon(launcher);
 
@@ -1370,6 +1643,7 @@ int lw_state_use_weapon(LwState *self, struct LwEntity *launcher, struct LwCell 
         return LW_ATTACK_USE_INVALID_POSITION;
     }
 
+    lw_item_retain(&weapon->base);
     int critical = lw_state_generate_critical(self, launcher);
     int result = critical ? LW_ATTACK_USE_CRITICAL : LW_ATTACK_USE_SUCCESS;
 
@@ -1385,6 +1659,7 @@ int lw_state_use_weapon(LwState *self, struct LwEntity *launcher, struct LwCell 
     lw_entity_use_tp(launcher, lw_weapon_get_cost(weapon));
     lw_entity_add_item_use(launcher, lw_weapon_get_id(weapon));
 
+    lw_item_release(&weapon->base);
     return result;
 }
 
@@ -1431,7 +1706,7 @@ int lw_state_use_weapon(LwState *self, struct LwEntity *launcher, struct LwCell 
  */
 int lw_state_use_chip(LwState *self, struct LwEntity *caster, struct LwCell *target, struct LwChip *template_) {
 
-    if (lw_order_current(&self->order) != caster) {
+    if (!lw_state_can_act(self, caster)) {
         return LW_ATTACK_USE_INVALID_TARGET;
     }
     if (lw_chip_get_cost(template_) > 0 && lw_chip_get_cost(template_) > lw_entity_get_tp(caster)) {
@@ -1462,10 +1737,15 @@ int lw_state_use_chip(LwState *self, struct LwEntity *caster, struct LwCell *tar
         }
     }
 
+    struct LwEntity *cellEntity = lw_cell_get_player(target, self->map);
+    if (lw_attack_blocked_by_density(atk, caster, cellEntity)) {
+        return LW_ATTACK_USE_INVALID_STATE;
+    }
+
+    lw_item_retain(&template_->base);
     int critical = lw_state_generate_critical(self, caster);
     int result = critical ? LW_ATTACK_USE_CRITICAL : LW_ATTACK_USE_SUCCESS;
 
-    struct LwEntity *cellEntity = lw_cell_get_player(target, self->map);
     lw_actions_log_use_chip(&self->actions, target, template_, result);
     if (critical) lw_entity_on_critical(caster);
     struct LwEntity *targets[LW_STATE_MAX_ENTITIES];
@@ -1481,6 +1761,7 @@ int lw_state_use_chip(LwState *self, struct LwEntity *caster, struct LwCell *tar
     lw_entity_use_tp(caster, lw_chip_get_cost(template_));
     lw_entity_add_item_use(caster, lw_chip_get_id(template_));
 
+    lw_item_release(&template_->base);
     return result;
 }
 
@@ -1504,6 +1785,7 @@ int lw_state_move_entity_path(LwState *self, struct LwEntity *entity,
                               struct LwCell *const *path, int path_len) {
 
     if (lw_entity_has_state(entity, LW_ENTITY_STATE_STATIC)) return 0; // Static entity cannot move.
+    if (lw_entity_has_state(entity, LW_ENTITY_STATE_ROOTED)) return 0;
 
     int size = path_len;
     if (size == 0) {
@@ -1513,14 +1795,34 @@ int lw_state_move_entity_path(LwState *self, struct LwEntity *entity,
         return 0;
     }
 
-    lw_actions_log_move(&self->actions, entity, (const struct LwCell *const *)path, path_len);
-    lw_stats_move(self->statistics, entity, entity, lw_entity_get_cell(entity),
-                  (struct LwCell **)path, path_len);
-
+    LwCell *start = lw_entity_get_cell(entity);
     lw_entity_use_mp(entity, size);
-    lw_map_move_entity(self->map, entity, (struct LwCell*)path[path_len - 1]);
-
-    return path_len;
+    LwEntity *plants[LW_STATE_MAX_ENTITIES];
+    int n_plants = 0;
+    if (!self->awakening_plant) {
+        LwEntity *entities[LW_STATE_MAX_ENTITIES];
+        int n = lw_state_get_all_entities(self, 0, entities, LW_STATE_MAX_ENTITIES);
+        for (int i = 0; i < n; i++) {
+            LwEntity *plant = entities[i];
+            if (plant != entity && plant->awakening_zone > 0 && !lw_entity_is_dead(plant) && plant->cell)
+                plants[n_plants++] = plant;
+        }
+    }
+    int done = 0;
+    for (int i = 0; i < size; i++) {
+        LwCell *from = i == 0 ? start : path[i - 1];
+        LwCell *to = path[i];
+        if (i < size - 1 && !enters_plant_zone(plants, n_plants, entity, from, to)) continue;
+        int n_step = i + 1 - done;
+        lw_actions_log_move(&self->actions, entity, (const struct LwCell *const *)(path + done), n_step);
+        lw_map_move_entity(self->map, entity, to);
+        lw_stats_move(self->statistics, entity, entity, done == 0 ? start : path[done - 1],
+                      (struct LwCell **)(path + done), n_step);
+        done = i + 1;
+        lw_state_check_plant_triggers(self, entity, from, to);
+        if (lw_entity_is_dead(entity) || self->fatal_error) return done;
+    }
+    return size;
 }
 
 
@@ -1533,8 +1835,11 @@ int lw_state_move_entity_path(LwState *self, struct LwEntity *entity,
 void lw_state_move_entity_cell(LwState *self, struct LwEntity *entity, struct LwCell *cell) {
 
     if (lw_entity_has_state(entity, LW_ENTITY_STATE_STATIC)) return; // Static entity cannot move.
+    if (lw_entity_has_state(entity, LW_ENTITY_STATE_ROOTED)) return;
 
+    LwCell *start = lw_entity_get_cell(entity);
     lw_map_move_entity(self->map, entity, cell);
+    lw_state_check_plant_triggers(self, entity, start, lw_entity_get_cell(entity));
 }
 
 
@@ -1561,6 +1866,7 @@ void lw_state_teleport_entity(LwState *self, struct LwEntity *entity, struct LwC
     }
 
     lw_stats_teleportation(self->statistics, entity, caster, start, cell, itemId);
+    lw_state_check_plant_triggers(self, entity, start, lw_entity_get_cell(entity));
 }
 
 
@@ -1580,6 +1886,7 @@ void lw_state_slide_entity(LwState *self, struct LwEntity *entity, struct LwCell
                            struct LwEntity *caster) {
 
     if (lw_entity_has_state(entity, LW_ENTITY_STATE_STATIC)) return;
+    if (lw_entity_has_state(entity, LW_ENTITY_STATE_ROOTED)) return;
 
     struct LwCell *start = lw_entity_get_cell(entity);
 
@@ -1594,6 +1901,7 @@ void lw_state_slide_entity(LwState *self, struct LwEntity *entity, struct LwCell
         lw_stats_move(self->statistics, caster, entity, start, path, n_path);
         lw_stats_slide(self->statistics, entity, caster, start, cell);
         lw_entity_on_moved(entity, caster);
+        check_plant_triggers_along(self, entity, start, lw_entity_get_cell(entity));
     }
 }
 
@@ -1631,6 +1939,8 @@ void lw_state_invert_entities(LwState *self, struct LwEntity *caster, struct LwE
     // Passifs
     lw_entity_on_moved(target, caster);
     lw_entity_on_moved(caster, caster);
+    lw_state_check_plant_triggers(self, caster, start, lw_entity_get_cell(caster));
+    lw_state_check_plant_triggers(self, target, end, lw_entity_get_cell(target));
 }
 
 
@@ -1644,6 +1954,69 @@ int lw_state_summon_entity(LwState *self, struct LwEntity *caster, struct LwCell
     return lw_state_summon_entity_named(self, caster, target, template_, NULL);
 }
 
+static struct LwEntity *lw_state_prepare_summon(LwState *self, struct LwEntity *owner,
+                                                 int type, int level, int critical,
+                                                 const char *name) {
+    if (self->fatal_error) return NULL;
+    if (lw_bulbs_get_invocation_template(type) == NULL) {
+        self->fatal_error = LW_STATE_ERROR_SUMMON_TEMPLATE;
+        snprintf(self->fatal_error_message, sizeof(self->fatal_error_message),
+                 "summon template %d is not registered", type);
+        return NULL;
+    }
+    int team = lw_entity_get_team(owner);
+    if (team < 0 || team >= self->n_teams || self->teams[team] == NULL ||
+        self->n_entities >= LW_STATE_MAX_ENTITIES ||
+        self->teams[team]->n_entities >= LW_TEAM_MAX_ENTITIES ||
+        self->order.n_leeks >= LW_ORDER_MAX_ENTITIES) {
+        self->fatal_error = LW_STATE_ERROR_SUMMON_CAPACITY;
+        snprintf(self->fatal_error_message, sizeof(self->fatal_error_message),
+                 "cannot add summon: invalid team or entity capacity reached");
+        return NULL;
+    }
+    struct LwEntity *summon = lw_bulb_create(owner, -self->m_next_entity_id,
+                                              type, level, critical, name);
+    if (summon == NULL) {
+        self->fatal_error = LW_STATE_ERROR_SUMMON_ALLOCATION;
+        snprintf(self->fatal_error_message, sizeof(self->fatal_error_message),
+                 "cannot allocate or initialize summon template %d", type);
+    } else {
+        lw_state_adopt_entity(self, summon);
+    }
+    return summon;
+}
+
+static void lw_state_register_summon(LwState *self, struct LwEntity *owner,
+                                     struct LwEntity *invoc, struct LwCell *target,
+                                     int critical) {
+    int fid = lw_state_get_next_entity_id(self);
+    lw_entity_set_state(invoc, self, fid);
+    int team = lw_entity_get_team(owner);
+    lw_entity_set_team(invoc, team);
+    lw_team_add_entity(self->teams[team], invoc);
+    self->m_entities[self->n_entities++] = invoc;
+    lw_order_add_summon(&self->order, owner, invoc);
+    int turn = lw_order_get_turn(&self->order);
+    int n_chips = lw_chips_template_count();
+    for (int i = 0; i < n_chips; i++) {
+        LwChip *chip = lw_chips_template_at(i);
+        if (chip && !lw_chip_is_team_cooldown(chip) &&
+            lw_chip_get_initial_cooldown(chip) >= turn) {
+            lw_entity_add_cooldown(invoc, chip, lw_chip_get_initial_cooldown(chip) + 2 - turn);
+        }
+    }
+    lw_map_set_entity(self->map, invoc, target);
+    lw_actions_add_entity(&self->actions, invoc, critical);
+}
+
+static void apply_permanent_states(LwState *self, LwEntity *entity) {
+    for (int i = 0; i < entity->n_permanent_states && !self->fatal_error; i++) {
+        lw_effect_create_effect(self, LW_EFFECT_TYPE_ADD_STATE, -1, 1,
+                                entity->permanent_states[i], 0, 0,
+                                entity, entity, NULL, 0, 0, 0, 1, 0,
+                                LW_MODIFIER_IRREDUCTIBLE);
+    }
+}
 
 /* Java:
  *   public int summonEntity(Entity caster, Cell target, Chip template, String name) {
@@ -1678,27 +2051,46 @@ int lw_state_summon_entity(LwState *self, struct LwEntity *caster, struct LwCell
 int lw_state_summon_entity_named(LwState *self, struct LwEntity *caster, struct LwCell *target,
                                   struct LwChip *template_, const char *name) {
 
+    if (self->fatal_error) return self->fatal_error;
     struct LwAttack *atk = lw_chip_get_attack(template_);
     struct LwEffectParameters *params = lw_attack_get_effect_params_by_type(atk, LW_EFFECT_TYPE_SUMMON);
-    if (lw_order_current(&self->order) != caster || params == NULL) return -1;
+    if (!lw_state_can_act(self, caster) || params == NULL) return -1;
     if (lw_chip_get_cost(template_) > lw_entity_get_tp(caster)) return -2;
     if (lw_state_has_cooldown(self, caster, template_)) return -3;
     if (!lw_map_can_use_attack(self->map, lw_entity_get_cell(caster), target, atk)) return -4;
     if (!lw_cell_available(target, self->map)) return -4;
     if (lw_team_get_summon_count(self->teams[lw_entity_get_team(caster)]) >= LW_SUMMON_LIMIT) return -5;
+    if (lw_entity_has_state(caster, LW_ENTITY_STATE_STERILE)) return LW_ATTACK_USE_INVALID_STATE;
 
+    uint64_t previous_rng = self->rng_n;
     int critical = lw_state_generate_critical(self, caster);
+    struct LwEntity *summon = lw_state_prepare_summon(
+        self, caster, (int)lw_effect_params_get_value1(params),
+        lw_chip_get_level(template_), critical, name);
+    if (summon == NULL) {
+        self->rng_n = previous_rng;
+        return self->fatal_error;
+    }
+    lw_item_retain(&template_->base);
     int result = critical ? LW_ATTACK_USE_CRITICAL : LW_ATTACK_USE_SUCCESS;
 
     lw_actions_log_use_chip(&self->actions, target, template_, result);
     if (critical) lw_entity_on_critical(caster);
 
     // On invoque
-    struct LwEntity *summon = lw_state_create_summon(self, caster, (int)lw_effect_params_get_value1(params),
-                                                     target, lw_chip_get_level(template_), critical, name);
+    lw_state_register_summon(self, caster, summon, target, critical);
 
     // On balance l'action
     lw_actions_log_invocation(&self->actions, summon, result);
+    apply_permanent_states(self, summon);
+    if (!self->fatal_error && self->type == LW_FIGHT_TYPE_COLOSSUS &&
+        lw_entity_get_team(summon) == 1 && self->colossus_multiplier > 0) {
+        apply_colossus_multiplier(self, summon);
+    }
+    if (self->fatal_error) {
+        lw_item_release(&template_->base);
+        return self->fatal_error;
+    }
     lw_stats_summon(self->statistics, caster, summon);
     lw_stats_use_chip(self->statistics, caster, template_, target, NULL, 0, NULL);
 
@@ -1708,6 +2100,7 @@ int lw_state_summon_entity_named(LwState *self, struct LwEntity *caster, struct 
 
     lw_entity_use_tp(caster, lw_chip_get_cost(template_));
 
+    lw_item_release(&template_->base);
     return result;
 }
 
@@ -1731,29 +2124,9 @@ struct LwEntity* lw_state_create_summon(LwState *self, struct LwEntity *owner, i
                                         struct LwCell *target, int level, int critical,
                                         const char *name) {
 
-    int fid = lw_state_get_next_entity_id(self);
-    struct LwEntity *invoc = lw_bulb_create(owner, -fid, type, level, critical, name);
-    lw_entity_set_state(invoc, self, fid);
-
-    int team = lw_entity_get_team(owner);
-
-    lw_entity_set_team(invoc, team);
-    lw_team_add_entity(self->teams[team], invoc);
-
-    // On ajoute dans les tableaux
-    if (self->n_entities < LW_STATE_MAX_ENTITIES) {
-        self->m_entities[self->n_entities++] = invoc;
-    }
-
-    // On ajoute dans l'ordre de jeu
-    lw_order_add_summon(&self->order, owner, invoc);
-
-    // On met la cellule
-    lw_map_set_entity(self->map, invoc, target);
-
-    // On l'ajoute dans les infos du combat
-    lw_actions_add_entity(&self->actions, invoc, critical);
-
+    struct LwEntity *invoc = lw_state_prepare_summon(self, owner, type, level, critical, name);
+    if (invoc == NULL) return NULL;
+    lw_state_register_summon(self, owner, invoc, target, critical);
     return invoc;
 }
 
@@ -1825,7 +2198,7 @@ void lw_state_remove_invocation(LwState *self, struct LwEntity *invoc, int force
 int lw_state_resurrect_entity(LwState *self, struct LwEntity *caster, struct LwCell *target,
                               struct LwChip *template_, struct LwEntity *target_entity, int fullLife) {
 
-    if (lw_order_current(&self->order) != caster) {
+    if (!lw_state_can_act(self, caster)) {
         return LW_ATTACK_USE_INVALID_TARGET;
     }
     if (lw_chip_get_cost(template_) > lw_entity_get_tp(caster)) {
@@ -1877,27 +2250,10 @@ int lw_state_resurrect_entity(LwState *self, struct LwEntity *caster, struct LwC
 }
 
 
-/* Java:
- *   public void resurrect(Entity owner, Entity entity, Cell cell, boolean critical, boolean fullLife) {
- *       Entity next = null;
- *       boolean start = false;
- *       for (Entity e : initialOrder) {
- *           if (e == entity) { start = true; continue; }
- *           if (!start) continue;
- *           if (e.isDead()) continue;
- *           next = e;
- *           break;
- *       }
- *       if (next == null) order.addEntity(entity);
- *       else              order.addEntity(order.getEntityTurnOrder(next) - 1, entity);
- *       entity.resurrect(owner, critical ? Effect.CRITICAL_FACTOR : 1.0, fullLife);
- *       this.map.setEntity(entity, cell);
- *       actions.log(new ActionResurrect(owner, entity));
- *   }
- */
 void lw_state_resurrect(LwState *self, struct LwEntity *owner, struct LwEntity *entity,
                         struct LwCell *cell, int critical, int fullLife) {
 
+    int after_summoner = lw_order_get_entity_turn_order(&self->order, lw_entity_get_summoner(entity));
     struct LwEntity *next = NULL;
     int start = 0;
     for (int i = 0; i < self->n_initial_order; i++) {
@@ -1915,11 +2271,9 @@ void lw_state_resurrect(LwState *self, struct LwEntity *owner, struct LwEntity *
         next = e;
         break;
     }
-    if (next == NULL) {
-        lw_order_add_entity(&self->order, entity);
-    } else {
-        lw_order_add_entity_at(&self->order, lw_order_get_entity_turn_order(&self->order, next) - 1, entity);
-    }
+    int index = after_summoner > 0 ? after_summoner :
+        (next ? lw_order_get_entity_turn_order(&self->order, next) - 1 : self->order.n_leeks);
+    lw_order_add_entity_at(&self->order, index, entity);
     lw_entity_resurrect_proc(entity, owner, critical ? LW_CRITICAL_FACTOR_F : 1.0, fullLife);
 
     // On met la cellule
@@ -1927,6 +2281,9 @@ void lw_state_resurrect(LwState *self, struct LwEntity *owner, struct LwEntity *
 
     // On balance l'action
     lw_actions_log_resurrect(&self->actions, owner, entity);
+    if (entity->type == LW_ENTITY_TYPE_TURRET) lw_entity_start_fight(entity);
+    apply_permanent_states(self, entity);
+    apply_start_effects(self, entity);
 }
 
 

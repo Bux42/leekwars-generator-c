@@ -105,8 +105,12 @@ static inline const char* lw_chip_to_string(const LwChip *self) { return self->b
 
 /* public static void addChip(Chip chip)
  * Registers `chip` in the static map and announces it to the Items
- * registry as TYPE_CHIP. Caller retains ownership of the storage. */
-void    lw_chips_add_chip(LwChip *chip);
+ * registry as TYPE_CHIP. Unmanaged storage remains caller-owned; the registry
+ * retains managed items. Returns 0 on invalid input or allocation failure.
+ * Lookup pointers are borrowed: retain managed items held across replacement
+ * or clear. The templates array is invalidated by registry mutation. */
+int     lw_chips_add_chip(LwChip *chip);
+void    lw_chips_clear(void);
 
 /* public static Chip getChip(int id) -- NULL if unknown. */
 LwChip *lw_chips_get_chip(int id);

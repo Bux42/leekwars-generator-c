@@ -18,6 +18,11 @@
 #ifndef LW_CONSTANTS_H
 #define LW_CONSTANTS_H
 
+typedef struct {
+    int type;
+    int value;
+} LwStartEffect;
+
 /* ---- action/Action.java ----------------------------------------- */
 
 /* Actions */
@@ -35,6 +40,8 @@
 #define LW_ACTION_STACK_EFFECT       14
 #define LW_ACTION_CHEST_OPENED       15
 #define LW_ACTION_USE_WEAPON         16
+#define LW_ACTION_PLANT_AWAKE        17
+#define LW_ACTION_PLANT_ASLEEP       18
 
 /* Buffs */
 #define LW_ACTION_LOST_PT           100
@@ -61,6 +68,7 @@
 #define LW_ACTION_ADD_CHIP_EFFECT   302
 #define LW_ACTION_REMOVE_EFFECT     303
 #define LW_ACTION_UPDATE_EFFECT     304
+#define LW_ACTION_UPDATE_EFFECT_TURNS 309
 #define LW_ACTION_REDUCE_EFFECTS    306
 #define LW_ACTION_REMOVE_POISONS    307
 #define LW_ACTION_REMOVE_SHACKLES   308
@@ -83,6 +91,7 @@
 #define LW_ATTACK_USE_TOO_MANY_SUMMONS         -5
 #define LW_ATTACK_USE_RESURRECT_INVALID_ENTITY -6
 #define LW_ATTACK_USE_MAX_USES                 -7
+#define LW_ATTACK_USE_INVALID_STATE            -8
 
 #define LW_ATTACK_LAUNCH_TYPE_LINE              1
 #define LW_ATTACK_LAUNCH_TYPE_DIAGONAL          2
@@ -110,6 +119,8 @@
 #define LW_ENTITY_STATE_ROOTED               9
 #define LW_ENTITY_STATE_PETRIFIED           10
 #define LW_ENTITY_STATE_STATIC              11
+#define LW_ENTITY_STATE_STERILE             12
+#define LW_ENTITY_STATE_AMPUTATED           13
 
 
 /* ---- effect/Effect.java ----------------------------------------- */
@@ -173,8 +184,11 @@
 #define LW_EFFECT_TYPE_TOTAL_DEBUFF                60
 #define LW_EFFECT_TYPE_STEAL_LIFE                  61
 #define LW_EFFECT_TYPE_MULTIPLY_STATS              62
+#define LW_EFFECT_TYPE_DAMAGE_TO_RESISTANCE         63
+#define LW_EFFECT_TYPE_SUPERINFECTION              64
+#define LW_EFFECT_TYPE_RAW_SHACKLE_STRENGTH        65
 
-#define LW_EFFECT_COUNT                            62  /* table size */
+#define LW_EFFECT_COUNT                            65  /* highest effect id */
 
 /* For the Effect.PROPAGATION pseudo-effect (value emitted via
  * action stream but not stored as a stat). */
@@ -230,6 +244,7 @@
 #define LW_ENTITY_TYPE_TURRET    2
 #define LW_ENTITY_TYPE_CHEST     3
 #define LW_ENTITY_TYPE_MOB       4
+#define LW_ENTITY_TYPE_PLANT     5
 
 #define LW_ENTITY_SAY_LIMIT_TURN  2
 #define LW_ENTITY_SHOW_LIMIT_TURN 5

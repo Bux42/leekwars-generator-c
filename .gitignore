@@ -1,5 +1,8 @@
 # Build artefacts
 build/
+/build-*/
+/cmake-build-*/
+/out/build/
 *.o
 *.obj
 *.lib
@@ -10,6 +13,20 @@ build/
 *.pyd
 *.a
 *.exe
+
+# Visual Studio and MSVC
+.vs/
+CMakeUserPresets.json
+*.user
+*.pdb
+*.ilk
+*.idb
+*.ipdb
+*.iobj
+*.tlog
+*.lastbuildstate
+*.VC.db
+*.VC.opendb
 
 # Cython generated C
 bindings/python/**/*.c

@@ -15,55 +15,15 @@
 
 #include "lw_constants.h"
 #include "lw_effect.h"
+#include "lw_entity.h"
+#include "lw_map.h"
 #include "lw_pathfinding.h"
 #include "lw_rng.h"
+#include "lw_state.h"
 #include "lw_cell.h"
+#include "lw_util.h"
 
 #include <stddef.h>
-
-
-/* ---- Forward decls for the engine APIs we call --------------------
- *
- * Map / State / Entity live in their own (mostly not-yet-ported)
- * headers. We only need the function signatures here; the linker
- * resolves them once those modules exist. */
-
-/* maps/Map.java */
-LwCell *lw_map_get_attract_last_available_cell(struct LwMap *map,
-                                               LwCell *from, LwCell *target,
-                                               LwCell *caster_cell);
-LwCell *lw_map_get_push_last_available_cell   (struct LwMap *map,
-                                               LwCell *from, LwCell *target,
-                                               LwCell *caster_cell);
-
-/* maps/Cell.java -- cell.getPlayer(map) is declared in lw_cell.h. */
-
-/* state/State.java
- *
- * NOTE: the LwState struct definition is being ported in parallel; we
- * declare the methods we need here.  RNG access goes through
- * lw_state_get_rng(state) -> &state->rng_n so the convention from
- * PORTING_CONVENTIONS.md ("equivalent lw_rng_double(&state->rng_n)
- * call at the same code location in C") is preserved at the call
- * site by callers that have direct field access; the accessor wrapper
- * is provided so this file doesn't need the full LwState definition.
- */
-struct LwMap *lw_state_get_map(const struct LwState *state);
-uint64_t     *lw_state_get_rng (struct LwState *state);
-void          lw_state_slide_entity   (struct LwState *state, struct LwEntity *e,
-                                       LwCell *destination, struct LwEntity *caster);
-void          lw_state_teleport_entity(struct LwState *state, struct LwEntity *e,
-                                       LwCell *destination, struct LwEntity *caster,
-                                       int item_id);
-
-/* state/Entity.java */
-LwCell *lw_entity_get_cell  (const struct LwEntity *e);
-int     lw_entity_get_team  (const struct LwEntity *e);
-int     lw_entity_is_alive  (const struct LwEntity *e);
-int     lw_entity_is_summon (const struct LwEntity *e);
-int     lw_entity_has_effect(const struct LwEntity *e, int item_id);
-
-/* Effect.createEffect comes from lw_effect.h via lw_effect_create_effect. */
 
 
 /* ---- Internal helpers --------------------------------------------- */
@@ -183,7 +143,7 @@ int lw_attack_get_target_cells_for_caster(const LwAttack *self,
      * which the area code casts back to whatever it needs. */
     LwCell *cast_cell = lw_entity_get_cell(caster);
     return lw_area_get_area(&self->area, map, cast_cell, target,
-                            (struct LwLeek *)caster, out_buf, out_cap);
+                            caster, out_buf, out_cap);
 }
 
 
@@ -229,7 +189,7 @@ int lw_attack_get_weapon_targets(const LwAttack *self,
     LwCell target_cells[64];
     int n_target_cells = lw_area_get_area(&self->area, lw_state_get_map(state),
                                           lw_entity_get_cell(caster), target,
-                                          (struct LwLeek *)caster,
+                                          caster,
                                           target_cells, 64);
 
     /* On trouve les poireaux sur ces cellules */
@@ -296,7 +256,7 @@ int lw_attack_apply_on_cell(LwAttack *self,
     LwCell target_cells[64];
     int n_target_cells = lw_area_get_area(&self->area, lw_state_get_map(state),
                                           lw_entity_get_cell(caster), target,
-                                          (struct LwLeek *)caster,
+                                          caster,
                                           target_cells, 64);
 
     /* On trouve les poireaux sur ces cellules */
@@ -319,7 +279,7 @@ int lw_attack_apply_on_cell(LwAttack *self,
     }
 
     /* On défini le jet */
-    double jet = lw_rng_get_double(lw_state_get_rng(state));
+    double jet = lw_rng_get_double(&state->rng_n);
 
     /* Apply effects */
     int previous_effect_total_value = 0;
@@ -333,6 +293,7 @@ int lw_attack_apply_on_cell(LwAttack *self,
         if (parameters->id == LW_EFFECT_TYPE_ATTRACT) {
             for (int t = 0; t < n_target_entities; t++) {
                 struct LwEntity *entity = target_entities[t];
+                if (lw_entity_is_dead(entity) || lw_entity_get_cell(entity) == NULL) continue;
                 /* Attract directly to target cell */
                 LwCell *destination = lw_map_get_attract_last_available_cell(
                     lw_state_get_map(state),
@@ -343,11 +304,21 @@ int lw_attack_apply_on_cell(LwAttack *self,
         } else if (parameters->id == LW_EFFECT_TYPE_PUSH) {
             for (int t = 0; t < n_target_entities; t++) {
                 struct LwEntity *entity = target_entities[t];
+                if (lw_entity_is_dead(entity) || lw_entity_get_cell(entity) == NULL) continue;
                 /* Find last available position to push */
                 LwCell *destination = lw_map_get_push_last_available_cell(
                     lw_state_get_map(state),
                     lw_entity_get_cell(entity), target,
                     lw_entity_get_cell(caster));
+                lw_state_slide_entity(state, entity, destination, caster);
+            }
+        } else if (parameters->id == LW_EFFECT_TYPE_REPEL) {
+            int distance = lw_java_round(parameters->value1 * (critical ? LW_CRITICAL_FACTOR_F : 1.0));
+            for (int t = 0; t < n_target_entities; t++) {
+                struct LwEntity *entity = target_entities[t];
+                if (entity == caster || lw_entity_is_dead(entity) || lw_entity_get_cell(entity) == NULL) continue;
+                LwCell *destination = lw_map_get_repel_last_available_cell(
+                    lw_state_get_map(state), lw_entity_get_cell(entity), lw_entity_get_cell(caster), distance);
                 lw_state_slide_entity(state, entity, destination, caster);
             }
         }
@@ -430,6 +401,16 @@ int lw_attack_apply_on_cell(LwAttack *self,
     return n_return;
 }
 
+
+int lw_attack_blocked_by_density(const LwAttack *self, struct LwEntity *caster,
+                                 struct LwEntity *cell_entity) {
+    const LwEffectParameters *permutation =
+        lw_attack_get_effect_parameters_by_type(self, LW_EFFECT_TYPE_PERMUTATION);
+    if (!permutation && !lw_attack_get_effect_parameters_by_type(self, LW_EFFECT_TYPE_TELEPORT)) return 0;
+    if (lw_entity_has_state(caster, LW_ENTITY_STATE_DENSE)) return 1;
+    return cell_entity && lw_entity_has_state(cell_entity, LW_ENTITY_STATE_DENSE)
+        && permutation && lw_attack_filter_target(permutation->targets, caster, cell_entity);
+}
 
 /* private boolean filterTarget(int targets, Entity caster, Entity target) */
 int lw_attack_filter_target(int targets,

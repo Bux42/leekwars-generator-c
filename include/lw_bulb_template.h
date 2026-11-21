@@ -23,18 +23,21 @@ struct LwChip;
 
 
 #define LW_BULB_TEMPLATE_NAME_MAX     64
-#define LW_BULB_TEMPLATE_MAX_CHIPS    16
-#define LW_BULB_TEMPLATE_REGISTRY_MAX 64
 
 
-typedef struct {
+typedef struct LwBulbTemplate {
 
     int    m_id;                                            /* private final int mId */
     char   m_name[LW_BULB_TEMPLATE_NAME_MAX];               /* private final String mName */
 
     /* private final ArrayList<Chip> mChips */
-    struct LwChip* m_chips[LW_BULB_TEMPLATE_MAX_CHIPS];
+    struct LwChip** m_chips;
     int    n_chips;
+    int    chips_capacity;
+    int   *m_states;
+    int    n_states;
+    int    states_capacity;
+    int    awakening_zone;
 
     int    m_min_life,        m_max_life;
     int    m_min_strength,    m_max_strength;
@@ -52,7 +55,8 @@ typedef struct {
 /* Java: public BulbTemplate(int id, String name, ArrayNode chips, ObjectNode characteristics)
  *
  * In C the JSON parsing happens in the binding layer; the init function
- * takes the already-extracted min/max bounds + chips array. */
+ * takes the already-extracted min/max bounds. Dispose a previously initialized
+ * template before reinitializing it. */
 void lw_bulb_template_init(LwBulbTemplate *self, int id, const char *name,
                            int min_life, int max_life,
                            int min_strength, int max_strength,
@@ -65,7 +69,14 @@ void lw_bulb_template_init(LwBulbTemplate *self, int id, const char *name,
                            int min_mp, int max_mp);
 
 /* Java: void mChips.add(template) -- helper to fill the chip list after init. */
-void lw_bulb_template_add_chip(LwBulbTemplate *self, struct LwChip *chip);
+/* Releases the chip pointer array, not the chips themselves. Unregister a
+ * borrowed template before disposing it. */
+void lw_bulb_template_dispose(LwBulbTemplate *self);
+/* Returns 0 for invalid input or allocation failure. */
+int lw_bulb_template_add_chip(LwBulbTemplate *self, struct LwChip *chip);
+/* Invalid state ordinals are ignored, as in Java. Returns 0 on allocation failure. */
+int lw_bulb_template_add_state(LwBulbTemplate *self, int state);
+void lw_bulb_template_set_awakening_zone(LwBulbTemplate *self, int zone);
 
 
 /* Java: public int getId() / getName() */
@@ -131,9 +142,13 @@ LwBulbTemplate* lw_bulbs_get_invocation_template(int id);
  *           sTemplates.put(invocation.getId(), invocation);
  *       }
  *
- * NOTE: the registry stores pointers to caller-owned LwBulbTemplate
- * instances (typically static descriptors loaded once at engine init). */
-void lw_bulbs_add_invocation_template(LwBulbTemplate *invocation);
+ * The borrowed variant stores a caller-owned pointer. The owned variant
+ * takes ownership only on success and disposes and frees it on replacement
+ * or clear. Registered borrowed templates must remain valid until replaced
+ * or cleared.
+ * Both return 0 on invalid input or allocation failure. */
+int lw_bulbs_add_invocation_template(LwBulbTemplate *invocation);
+int lw_bulbs_add_owned_invocation_template(LwBulbTemplate *invocation);
 
 /* Reset the registry (test harness use). */
 void lw_bulbs_clear(void);

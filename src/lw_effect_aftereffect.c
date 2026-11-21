@@ -50,6 +50,8 @@ void lw_effect_aftereffect_apply(LwEffect *self, struct LwState *state) {
  */
 void lw_effect_aftereffect_apply_start_turn(LwEffect *self, struct LwState *state) {
 
+    if (lw_entity_has_state(self->target, LW_ENTITY_STATE_INVINCIBLE)) return;
+
     if (lw_entity_get_life(self->target) < self->value) {
         self->value = lw_entity_get_life(self->target);
     }

@@ -80,6 +80,10 @@ void lw_statistics_init_default(LwStatisticsManager *self) {
 
     self->get_chests           = noop_get_long;
     self->get_chests_kills     = noop_get_long;
+    self->get_operations_by_entity_count = NULL;
+    self->get_operations_by_entity_at = NULL;
 
     self->user_data            = NULL;
+    self->use_mp               = NULL;
+    self->generator_fight      = NULL;
 }

@@ -15,7 +15,9 @@
  */
 #include "lw_entity_info.h"
 
+#include <limits.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "lw_constants.h"
@@ -58,10 +60,12 @@ void lw_entity_set_initial_cell(struct LwEntity *self, int cell);
 
 struct LwWeapon;
 struct LwChip;
+void lw_entity_dispose(struct LwEntity *self);
 struct LwWeapon* lw_weapons_get_weapon(int id);
 struct LwChip*   lw_chips_get_chip   (int id);
 void lw_entity_add_weapon(struct LwEntity *self, struct LwWeapon *weapon);
 void lw_entity_add_chip  (struct LwEntity *self, struct LwChip *chip);
+int lw_entity_add_start_effect(struct LwEntity *self, int type, int value);
 
 /* Forward decl into lw_scenario.c -- mirrors scenario.getFarmer / scenario.teams */
 struct LwScenario;
@@ -74,6 +78,34 @@ void lw_entity_info_init(LwEntityInfo *self) {
     if (self == NULL) return;
     memset(self, 0, sizeof(*self));
     self->ai_file = NULL;
+}
+
+void lw_entity_info_dispose(LwEntityInfo *self) {
+    if (self == NULL) return;
+    free(self->start_effects);
+    self->start_effects = NULL;
+    self->n_start_effects = 0;
+    self->start_effects_capacity = 0;
+}
+
+int lw_entity_info_add_start_effect(LwEntityInfo *self, int type, int value) {
+    if (self == NULL || self->n_start_effects < 0 ||
+        self->start_effects_capacity < self->n_start_effects ||
+        (self->n_start_effects > 0 && self->start_effects == NULL)) return 0;
+    if (self->n_start_effects == self->start_effects_capacity) {
+        if (self->start_effects_capacity > INT_MAX / 2) return 0;
+        int capacity = self->start_effects_capacity ? self->start_effects_capacity * 2 : 4;
+        if ((size_t)capacity > (size_t)-1 / sizeof(*self->start_effects)) return 0;
+        LwStartEffect *items = realloc(self->start_effects,
+                                       (size_t)capacity * sizeof(*items));
+        if (items == NULL) return 0;
+        self->start_effects = items;
+        self->start_effects_capacity = capacity;
+    }
+    self->start_effects[self->n_start_effects].type = type;
+    self->start_effects[self->n_start_effects].value = value;
+    self->n_start_effects++;
+    return 1;
 }
 
 
@@ -100,6 +132,11 @@ struct LwEntity* lw_entity_info_create_entity(const LwEntityInfo *self,
                                               struct LwFight *fight) {
     (void)generator;  /* errors are reported via the binding, not here */
     (void)fight;
+    if (self->n_start_effects < 0 ||
+        (self->n_start_effects > 0 && self->start_effects == NULL) ||
+        (size_t)self->n_start_effects > (size_t)-1 / sizeof(*self->start_effects)) {
+        return NULL;
+    }
 
     int actual_type = (self->custom_class != 0) ? self->custom_class : self->type;
     struct LwEntity *entity = lw_entity_new(actual_type);
@@ -153,6 +190,14 @@ struct LwEntity* lw_entity_info_create_entity(const LwEntityInfo *self,
     lw_entity_set_hat(entity, self->hat);
     lw_entity_set_metal(entity, self->metal);
     lw_entity_set_face(entity, self->face);
+    for (int i = 0; i < self->n_start_effects; i++) {
+        if (!lw_entity_add_start_effect(entity, self->start_effects[i].type,
+                                        self->start_effects[i].value)) {
+            lw_entity_dispose(entity);
+            free(entity);
+            return NULL;
+        }
+    }
     /* entity.setInitialCell(cell);  -- Java passes the Integer (may be
      * null). In C: only set when has_cell, leaving the entity with a
      * zero-initialised "absent" initial cell otherwise. */

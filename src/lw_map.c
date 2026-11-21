@@ -18,6 +18,7 @@
 #include "lw_obstacle_info.h"
 #include "lw_rng.h"
 #include "lw_constants.h"
+#include "lw_util.h"
 
 /* The full LwState struct (with rng_n) lives in lw_state.h, which is
  * being ported in a sibling task. We include it eagerly: until it
@@ -873,6 +874,20 @@ LwCell* lw_map_get_push_last_available_cell(LwMap *self,
 }
 
 
+LwCell* lw_map_get_repel_last_available_cell(LwMap *self, LwCell *entity,
+                                             const LwCell *caster, int distance) {
+    int dx = lw_java_signum_int(entity->x - caster->x);
+    int dy = lw_java_signum_int(entity->y - caster->y);
+    if (dx == 0 && dy == 0) return entity;
+    LwCell *current = entity;
+    for (int i = 0; i < distance; ++i) {
+        LwCell *next = lw_cell_next(current, self, dx, dy);
+        if (next == NULL || !lw_cell_available(next, self)) break;
+        current = next;
+    }
+    return current;
+}
+
 /* public Cell getAttractLastAvailableCell(Cell entity, Cell target, Cell caster) {
  *     // Delta caster --> entity
  *     int cdx = (int) Math.signum(entity.x - caster.x);
@@ -1220,7 +1235,7 @@ void lw_map_generate_map_impl(LwMap *out_map,
                     }
                     if (c == NULL) continue;
 
-                    lw_map_set_entity(out_map, entity_idx, c);
+                    lw_map_set_entity(out_map, l, c);
                     if (n_leeks < LW_MAP_MAX_CELLS) leeks[n_leeks++] = entity_idx;
 
                     /* If turret, remove obstacles 5 cells around */

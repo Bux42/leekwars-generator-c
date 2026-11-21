@@ -27,10 +27,18 @@ endif()
 # Tests ----------------------------------------------------------------
 
 enable_testing()
+find_package(Threads REQUIRED)
 file(GLOB LW_TESTS CONFIGURE_DEPENDS "tests/test_*.c")
 foreach(test_src ${LW_TESTS})
   get_filename_component(test_name ${test_src} NAME_WE)
   add_executable(${test_name} ${test_src})
   target_link_libraries(${test_name} PRIVATE lwengine)
+  if(test_name STREQUAL "test_item_concurrency")
+    target_link_libraries(${test_name} PRIVATE Threads::Threads)
+  endif()
   add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
+
+# Standalone probe used by the optional Java differential harness.
+add_executable(lw_java_parity_probe tests/java_parity/parity_probe.c)
+target_link_libraries(lw_java_parity_probe PRIVATE lwengine)

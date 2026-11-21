@@ -22,13 +22,14 @@
  *   - ActionSay         (string message)
  *   - ActionShowCell    (hex color string)
  *   - ActionChestOpened (Map<int,int> resources)
- *   - Actions.toJSON / addOpsAndTimes (handled by the Cython binding)
+ *   - Actions.toJSON (the binding owns JSON serialization)
  *
  * Reference: java_reference/src/main/java/com/leekwars/generator/action/
  */
 #ifndef LW_ACTIONS_H
 #define LW_ACTIONS_H
 
+#include <stdint.h>
 #include "lw_constants.h"
 #include "lw_action_stream.h"
 
@@ -40,7 +41,15 @@ struct LwMap;
 struct LwState;
 struct LwWeapon;
 struct LwChip;
+struct LwStatisticsManager;
 typedef struct LwCell LwCell;
+
+#define LW_ACTIONS_MAX_OP_ENTRIES 64
+
+typedef struct {
+    int entity_id;
+    int64_t operations;
+} LwActionOperation;
 
 
 /* Java: public class Actions {
@@ -55,11 +64,13 @@ typedef struct LwCell LwCell;
  *       }
  *
  * NOTE: the JSON-tree fields (leeks, map, dead, ops, times) are emitted
- * during serialisation -- the Cython binding builds them from LwState.
- * Here we only carry the action stream + the next effect id.
+ * during serialisation. The operation map is retained here; other JSON
+ * trees are built by the binding from LwState.
  */
 typedef struct LwActions {
     LwActionStream stream;   /* mirrors actions[] + mNextEffectId */
+    LwActionOperation operations[LW_ACTIONS_MAX_OP_ENTRIES];
+    int n_operations;
 } LwActions;
 
 
@@ -83,6 +94,11 @@ int  lw_actions_get_next_id(const LwActions *self);
 
 /* public int currentID() { return actions.size() - 1; } */
 int  lw_actions_current_id(const LwActions *self);
+int  lw_actions_get_operation_count(const LwActions *self);
+int  lw_actions_get_operation(const LwActions *self, int index,
+                              int *entity_id, int64_t *operations);
+int  lw_actions_add_ops_and_times(LwActions *self,
+                                  struct LwStatisticsManager *statistics);
 
 /* public void addEntity(Entity entity, boolean critical) {
  *     ... builds an ObjectNode for the entity and appends to leeks[] ...
@@ -120,6 +136,9 @@ void lw_actions_log_new_turn(LwActions *self, int count);
 /* ActionEntityTurn.getJSON() emits [LEEK_TURN, id].
  * NOTE: Java accepts a nullable Entity; pass NULL → id = -1. */
 void lw_actions_log_entity_turn(LwActions *self, struct LwEntity *leek);
+void lw_actions_log_plant_awake(LwActions *self, struct LwEntity *plant,
+                                struct LwEntity *trigger, int tp);
+void lw_actions_log_plant_asleep(LwActions *self, struct LwEntity *plant);
 
 /* ActionEndTurn.getJSON() emits [END_TURN, target, pt, pm]. */
 void lw_actions_log_end_turn(LwActions *self, struct LwEntity *target);
@@ -176,6 +195,9 @@ void lw_actions_log_stack_effect(LwActions *self, int id, int value);
 
 /* ActionUpdateEffect.getJSON() emits [UPDATE_EFFECT, id, value]. */
 void lw_actions_log_update_effect(LwActions *self, int id, int value);
+
+/* ActionUpdateEffectTurns.getJSON() emits [UPDATE_EFFECT_TURNS, id, turns]. */
+void lw_actions_log_update_effect_turns(LwActions *self, int id, int turns);
 
 /* ActionRemoveEffect.getJSON() emits [REMOVE_EFFECT, id]. */
 void lw_actions_log_remove_effect(LwActions *self, int id);

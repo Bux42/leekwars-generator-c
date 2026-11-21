@@ -96,8 +96,7 @@ static inline const char* lw_weapon_to_string(const LwWeapon *self) { return sel
  *       public static Weapon getWeapon(int id) / getWeapon(String name)
  *       public static Map<Integer, Weapon> getTemplates()
  *
- * In C the registry lives in src_v2/lw_weapons.c. Capacity is sized so
- * that all known LeekWars weapons fit (~50 today).
+ * In C the registry lives in src/lw_weapons.c and grows as needed.
  */
 
 #ifndef LW_WEAPONS_MAX
@@ -107,8 +106,12 @@ static inline const char* lw_weapon_to_string(const LwWeapon *self) { return sel
 
 /* public static void addWeapon(Weapon weapon)
  * Registers `weapon` in the static map and announces it to the Items
- * registry as TYPE_WEAPON. Caller retains ownership of the storage. */
-void      lw_weapons_add_weapon(LwWeapon *weapon);
+ * registry as TYPE_WEAPON. Unmanaged storage remains caller-owned; the registry
+ * retains managed items. Returns 0 on invalid input or allocation failure.
+ * Lookup pointers are borrowed: retain managed items held across replacement
+ * or clear. The templates array is invalidated by registry mutation. */
+int       lw_weapons_add_weapon(LwWeapon *weapon);
+void      lw_weapons_clear(void);
 
 /* public static Weapon getWeapon(int id) -- NULL if unknown. */
 LwWeapon *lw_weapons_get_weapon(int id);

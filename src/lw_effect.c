@@ -18,6 +18,7 @@
 #include <stddef.h>
 
 #include "lw_effect.h"
+#include "lw_item.h"
 #include "lw_constants.h"
 #include "lw_actions.h"      /* lw_actions_log_stack_effect, lw_actions_log_add_effect */
 #include "lw_attack.h"       /* lw_attack_get_type, lw_attack_get_item_id */
@@ -77,12 +78,9 @@ int lw_effect_create_effect(struct LwState *state, int id, int turns, double aoe
                             int previous_effect_total_value, int target_count,
                             int propagate, int modifiers) {
 
-    /* Invalid effect id */
-    /* Java: if (id < 0 || id > effects.length) return 0;
-     * effects.length == 62 -- but the original test is `>` not `>=` so
-     * id == 62 is allowed; id 0 is rejected because effects[id-1] would
-     * underflow.  We keep the bug-for-bug match. */
-    if (id < 0 || id > LW_EFFECT_COUNT) {
+    if (state == NULL || lw_state_get_fatal_error(state)) return 0;
+    /* Reject invalid ids, including 0, before indexing the effect table. */
+    if (id <= 0 || id > LW_EFFECT_COUNT) {
         return 0;
     }
 
@@ -91,16 +89,15 @@ int lw_effect_create_effect(struct LwState *state, int id, int turns, double aoe
     /* Java: try { effect = (Effect) effects[id - 1].getDeclaredConstructor().newInstance(); }
      *       catch (Exception e) { return 0; }
      *
-     * In C, the failure mode is "id maps to a null slot" (33-36, 43, 50,
-     * 55-56, 58) -- in Java that NPEs at .getDeclaredConstructor and the
-     * catch returns 0.  We emulate by checking the slot validity here. */
+     * Unsupported ids must not create no-op effects. */
     switch (id) {
         case 33: case 34: case 35: case 36:
         case 43:
         case 50:
         case 55: case 56:
         case 58:
-            return 0;          /* null slot in Java effects[] */
+        case 63:               /* not yet implemented */
+            return 0;
         default:
             break;
     }
@@ -120,6 +117,7 @@ int lw_effect_create_effect(struct LwState *state, int id, int turns, double aoe
     effect->caster = caster;
     effect->target = target;
     effect->attack = attack;
+    if (attack) lw_item_retain(lw_attack_get_item(attack));
     effect->jet = jet;
     effect->erosion_rate = (id == LW_EFFECT_TYPE_POISON) ? LW_EROSION_POISON_F : LW_EROSION_DAMAGE_F;
     if (critical) effect->erosion_rate += LW_EROSION_CRITICAL_BONUS_F;
@@ -130,7 +128,7 @@ int lw_effect_create_effect(struct LwState *state, int id, int turns, double aoe
 
     /* Remove previous effect of the same type (that is not stackable) */
     if (lw_effect_get_turns(effect) != 0) {
-        if (!stackable) {
+        if (!stackable || id == LW_EFFECT_TYPE_ADD_STATE) {
             int n = lw_entity_get_effects_count(target);
             for (int i = 0; i < n; ++i) {
                 LwEffect *e = lw_entity_get_effect_at(target, i);
@@ -163,7 +161,7 @@ int lw_effect_create_effect(struct LwState *state, int id, int turns, double aoe
     lw_effect_apply(effect, state);
 
     /* Stack to previous item with the same characteristics */
-    if (effect->value > 0) {
+    if (effect->value > 0 && id != LW_EFFECT_TYPE_ADD_STATE) {
         int n = lw_entity_get_effects_count(target);
         for (int i = 0; i < n; ++i) {
             LwEffect *e = lw_entity_get_effect_at(target, i);
@@ -179,6 +177,7 @@ int lw_effect_create_effect(struct LwState *state, int id, int turns, double aoe
                 lw_actions_log_stack_effect(lw_state_get_actions(state),
                                             lw_effect_get_log_id(e),
                                             effect->value);
+                lw_stats_effect(state->statistics, target, caster, effect);
                 return effect->value;        /* No need to apply the effect again */
             }
         }
@@ -227,6 +226,11 @@ void lw_effect_add_log(LwEffect *self, struct LwState *state) {
 void lw_effect_reduce(LwEffect *self, double percent, struct LwEntity *caster) {
     /* Java: double reduction = Math.max(0.0, 1.0 - percent); */
     double reduction = lw_max_d(0.0, 1.0 - percent);
+
+    if (self->id == LW_EFFECT_TYPE_ADD_STATE) {
+        if (lw_java_round(reduction) == 0) self->value = 0;
+        return;
+    }
 
     self->value = (int) lw_java_round((double) self->value * reduction);
 
@@ -347,6 +351,7 @@ void lw_effect_apply(LwEffect *self, struct LwState *state) {
         case LW_EFFECT_TYPE_PERMUTATION:             lw_effect_permutation_apply(self, state);         return;
         case LW_EFFECT_TYPE_VITALITY:                lw_effect_vitality_apply(self, state);            return;
         case LW_EFFECT_TYPE_POISON:                  lw_effect_poison_apply(self, state);              return;
+        case LW_EFFECT_TYPE_SUPERINFECTION:          lw_effect_superinfection_apply(self, state);      return;
         case LW_EFFECT_TYPE_SUMMON:                  /* empty Java body */                              return;
         case LW_EFFECT_TYPE_RESURRECT:               /* empty Java body */                              return;
         case LW_EFFECT_TYPE_KILL:                    lw_effect_kill_apply(self, state);                return;
@@ -393,6 +398,7 @@ void lw_effect_apply(LwEffect *self, struct LwState *state) {
         case LW_EFFECT_TYPE_TOTAL_DEBUFF:            lw_effect_total_debuff_apply(self, state);        return;
         case LW_EFFECT_TYPE_STEAL_LIFE:              lw_effect_steal_life_apply(self, state);          return;
         case LW_EFFECT_TYPE_MULTIPLY_STATS:          lw_effect_multiply_stats_apply(self, state);      return;
+        case LW_EFFECT_TYPE_RAW_SHACKLE_STRENGTH:   lw_effect_raw_shackle_strength_apply(self, state); return;
         default: return;
     }
 }

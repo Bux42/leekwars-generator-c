@@ -102,9 +102,7 @@ void lw_effect_init(LwEffect *self);
  * (Effect.java:188). The created effect (if any) is registered on the
  * target+caster; the caller does not need to free anything.
  *
- * NOTE: the Java code keeps a per-fight pool of Effect objects via
- * Entity.addEffect / Entity.addLaunchedEffect.  In C, those methods own
- * the LwEffect storage (typically a slot in `state->effects[]`).
+ * Effect storage is owned by the state until lw_state_dispose.
  */
 int lw_effect_create_effect(struct LwState *state, int id, int turns, double aoe,
                             double value1, double value2, int critical,
@@ -197,12 +195,14 @@ void lw_effect_permutation_apply         (LwEffect *self, struct LwState *state)
 void lw_effect_vitality_apply            (LwEffect *self, struct LwState *state);
 void lw_effect_poison_apply              (LwEffect *self, struct LwState *state);
 void lw_effect_poison_apply_start_turn   (LwEffect *self, struct LwState *state);
+void lw_effect_superinfection_apply      (LwEffect *self, struct LwState *state);
 void lw_effect_summon_apply              (LwEffect *self, struct LwState *state); /* empty */
 void lw_effect_resurrect_apply           (LwEffect *self, struct LwState *state); /* empty */
 void lw_effect_kill_apply                (LwEffect *self, struct LwState *state);
 void lw_effect_shackle_mp_apply          (LwEffect *self, struct LwState *state);
 void lw_effect_shackle_tp_apply          (LwEffect *self, struct LwState *state);
 void lw_effect_shackle_strength_apply    (LwEffect *self, struct LwState *state);
+void lw_effect_raw_shackle_strength_apply(LwEffect *self, struct LwState *state);
 void lw_effect_damage_return_apply       (LwEffect *self, struct LwState *state);
 void lw_effect_buff_resistance_apply     (LwEffect *self, struct LwState *state);
 void lw_effect_buff_wisdom_apply         (LwEffect *self, struct LwState *state);

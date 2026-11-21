@@ -32,6 +32,8 @@
 #include "lw_map.h"
 #include "lw_cell.h"
 #include "lw_chip.h"
+#include "lw_bulb_template.h"
+#include "lw_fight.h"
 #include "lw_effect.h"
 #include "lw_statistics.h"
 #include <stdlib.h>  /* calloc */
@@ -120,39 +122,12 @@ int lw_entity_get_effects_ptr_array(const LwEntity *self,
 
 
 /* ---------------------------------------------------------------- */
-/* Effect pool slot allocator (Effect.createEffect needs a fresh   */
-/* LwEffect to work with). The Java port uses reflection.           */
-
-#define LW_EFFECT_POOL_CAP  4096
-static LwEffect g_effect_pool[LW_EFFECT_POOL_CAP];
-static int      g_effect_pool_n = 0;
-
-LwEffect* lw_state_alloc_effect(struct LwState *state) {
-    (void)state;
-    if (g_effect_pool_n >= LW_EFFECT_POOL_CAP) {
-        /* Wrap-around - parity tests don't generate enough effects to
-         * exhaust the pool; if they ever do, bump the cap. */
-        g_effect_pool_n = 0;
-    }
-    LwEffect *e = &g_effect_pool[g_effect_pool_n++];
-    memset(e, 0, sizeof(*e));
-    return e;
-}
-
-
-/* ---------------------------------------------------------------- */
 /* Bulb create wrapper (State agent wanted this, BulbTemplate has   */
 /* its own createInvocation -- they're the same thing).             */
 
 /* Java: Bulb.create(owner, id, type, level, critical, name) -- type is
  * the template id from the SUMMON effect's value1. We look up the
  * template in the Bulbs registry and call the per-template factory. */
-extern int lw_bulb_template_create_invocation(const struct LwBulbTemplate *self,
-                                               struct LwEntity *out_entity,
-                                               struct LwEntity *owner, int id,
-                                               int level, int critical);
-extern struct LwBulbTemplate* lw_bulbs_get_invocation_template(int id);
-
 LwEntity* lw_bulb_create(struct LwEntity *owner, int id, int type, int level,
                          int critical, const char *name) {
     (void)name;
@@ -164,37 +139,13 @@ LwEntity* lw_bulb_create(struct LwEntity *owner, int id, int type, int level,
     e->type = LW_ENTITY_TYPE_BULB;
     int rc = lw_bulb_template_create_invocation(t, e, owner, id, level, critical);
     if (rc == 0) {
+        lw_entity_dispose(e);
         free(e);
         return NULL;
     }
     return e;
 }
 
-
-/* ---------------------------------------------------------------- */
-/* Statistics dispatch. The State port talks through these helpers  */
-/* but the Statistics agent doesn't expose them under these names.  */
-/* No-op for the parity test (which doesn't read statistics).        */
-
-void lw_state_statistics_damage   (struct LwState *s, struct LwEntity *e, int v)
-                                  { (void)s; (void)e; (void)v; }
-void lw_state_statistics_heal     (struct LwState *s, struct LwEntity *e, int v)
-                                  { (void)s; (void)e; (void)v; }
-void lw_state_statistics_vitality (struct LwState *s, struct LwEntity *e, int v)
-                                  { (void)s; (void)e; (void)v; }
-void lw_state_statistics_characteristics(struct LwState *s, struct LwEntity *e)
-                                  { (void)s; (void)e; }
-void lw_state_statistics_update_stat(struct LwState *s, struct LwEntity *e,
-                                      int stat, int delta)
-                                  { (void)s; (void)e; (void)stat; (void)delta; }
-void lw_state_statistics_use_tp   (struct LwState *s, struct LwEntity *e, int v)
-                                  { (void)s; (void)e; (void)v; }
-void lw_state_statistics_entity_turn(struct LwState *s, struct LwEntity *e)
-                                  { (void)s; (void)e; }
-void lw_state_statistics_antidote (struct LwState *s, struct LwEntity *e)
-                                  { (void)s; (void)e; }
-
-/* lw_stats_summon, lw_stats_use_chip, lw_stats_move all defined in lw_statistics.c. */
 
 
 /* ---------------------------------------------------------------- */
@@ -251,34 +202,64 @@ const char* lw_registers_to_json_string(void *r) { (void)r; return ""; }
 int64_t lw_ai_get_analyze_time(void *ai)  { (void)ai; return 0; }
 int64_t lw_ai_get_compile_time(void *ai)  { (void)ai; return 0; }
 
-void lw_fight_listener_new_turn(void *listener, struct LwState *state) {
-    (void)listener; (void)state;
+void lw_fight_listener_new_turn(struct LwFightListener *listener, LwFight *fight) {
+    if (listener != NULL && listener->new_turn != NULL)
+        listener->new_turn(listener, fight);
 }
 
-void lw_actions_add_ops_and_times(LwActions *self, void *ops_obj,
-                                    void *times_obj) {
-    (void)self; (void)ops_obj; (void)times_obj;
+int lw_actions_add_ops_and_times(LwActions *self, LwStatisticsManager *statistics) {
+    if (self == NULL) return -1;
+    if (statistics == NULL || statistics->get_operations_by_entity_count == NULL) {
+        self->n_operations = 0;
+        return 0;
+    }
+    if (statistics->get_operations_by_entity_at == NULL) return -1;
+
+    int count = statistics->get_operations_by_entity_count(statistics);
+    if (count < 0 || count > LW_ACTIONS_MAX_OP_ENTRIES) return -1;
+
+    LwActionOperation entries[LW_ACTIONS_MAX_OP_ENTRIES];
+    for (int i = 0; i < count; i++) {
+        if (!statistics->get_operations_by_entity_at(
+                statistics, i, &entries[i].entity_id, &entries[i].operations)) {
+            return -1;
+        }
+    }
+    for (int i = 0; i < count; i++) self->operations[i] = entries[i];
+    self->n_operations = count;
+    return 0;
 }
 
 
 /* ---------------------------------------------------------------- */
-/* Statistics callbacks the Statistics agent didn't name correctly. */
-/* lw_stats_init_entity / characteristics / add_times / error /    */
-/* end_fight / set_generator_fight -- all no-ops for parity test.  */
+/* Statistics dispatch adapters for Fight and State.                */
 
-void lw_stats_init_entity        (struct LwStatisticsManager *m, struct LwEntity *e)
-                                 { (void)m; (void)e; }
-void lw_stats_characteristics    (struct LwStatisticsManager *m, struct LwEntity *e)
-                                 { (void)m; (void)e; }
-void lw_stats_add_times          (struct LwStatisticsManager *m, struct LwEntity *e,
-                                   int64_t exec_ns, int64_t ops)
-                                 { (void)m; (void)e; (void)exec_ns; (void)ops; }
-void lw_stats_error              (struct LwStatisticsManager *m, struct LwEntity *e)
-                                 { (void)m; (void)e; }
-void lw_stats_end_fight          (struct LwStatisticsManager *m, struct LwEntity **arr, int n)
-                                 { (void)m; (void)arr; (void)n; }
-void lw_stats_set_generator_fight(struct LwStatisticsManager *m, void *fight)
-                                 { (void)m; (void)fight; }
+void lw_stats_init_entity(struct LwStatisticsManager *m, struct LwEntity *e) {
+    if (m != NULL && m->init != NULL) m->init(m, e);
+}
+
+void lw_stats_characteristics(struct LwStatisticsManager *m, struct LwEntity *e) {
+    if (m != NULL && m->characteristics != NULL) m->characteristics(m, e);
+}
+
+void lw_stats_add_times(struct LwStatisticsManager *m, struct LwEntity *e,
+                        int64_t elapsed_ns, int64_t operations) {
+    if (m != NULL && m->add_times != NULL)
+        m->add_times(m, e, elapsed_ns, operations);
+}
+
+void lw_stats_error(struct LwStatisticsManager *m, struct LwEntity *e) {
+    if (m != NULL && m->error != NULL) m->error(m, e);
+}
+
+void lw_stats_end_fight(struct LwStatisticsManager *m, struct LwEntity **entities,
+                        int count) {
+    if (m != NULL && m->end_fight != NULL) m->end_fight(m, entities, count);
+}
+
+void lw_stats_set_generator_fight(struct LwStatisticsManager *m, struct LwFight *fight) {
+    if (m != NULL) m->generator_fight = fight;
+}
 
 
 /* ---------------------------------------------------------------- */
@@ -314,7 +295,7 @@ LwEntity* lw_state_get_entity_at(struct LwState *state, int idx) {
     return state->m_entities[idx];
 }
 
-LwEntity* lw_state_get_entity_by_id(struct LwState *state, int id) {
+LwEntity* lw_state_get_entity_by_id(struct LwState *state, int64_t id) {
     if (state == NULL) return NULL;
     for (int i = 0; i < state->n_entities; i++) {
         LwEntity *e = state->m_entities[i];
@@ -360,13 +341,6 @@ LwTeam* lw_team_clone(const LwTeam *src) {
     if (t == NULL) return NULL;
     memcpy(t, src, sizeof(LwTeam));
     return t;
-}
-
-/* Java: team.applyCoolDown() walks each entity's cooldown list and
- * decrements. We delegate to per-entity applyCooldown. */
-void lw_team_apply_cooldown(LwTeam *self) {
-    (void)self;
-    /* No-op for parity test (no chips with cooldowns triggered). */
 }
 
 /* lw_state.c calls this as:
@@ -443,14 +417,14 @@ int lw_state_n_teams(const struct LwState *state) {
     return state ? state->n_teams : 0;
 }
 
-int lw_state_get_team_entity_count(struct LwState *state, int team_id) {
+int lw_state_get_team_entity_count(const struct LwState *state, int team_id) {
     if (state == NULL) return 0;
     if (team_id < 0 || team_id >= state->n_teams) return 0;
     LwTeam *t = state->teams[team_id];
     return t ? t->n_entities : 0;
 }
 
-int lw_state_get_team_entity(struct LwState *state, int team_id, int idx) {
+int lw_state_get_team_entity(const struct LwState *state, int team_id, int idx) {
     if (state == NULL) return -1;
     if (team_id < 0 || team_id >= state->n_teams) return -1;
     LwTeam *t = state->teams[team_id];
@@ -586,6 +560,9 @@ int lw_glue_apply_use_weapon(struct LwState *state, int entity_idx,
      * always-fire Python test). Use entity.setWeapon() directly. */
     struct LwWeapon *w = lw_weapons_get_weapon(weapon_id);
     if (w == NULL) return -105;
+    if (lw_entity_has_state(launcher, LW_ENTITY_STATE_AMPUTATED)) {
+        return lw_state_use_weapon(state, launcher, target);
+    }
     extern void lw_entity_set_weapon(struct LwEntity *e, struct LwWeapon *w);
     lw_entity_set_weapon(launcher, w);
 
@@ -602,10 +579,6 @@ int lw_glue_apply_use_weapon(struct LwState *state, int entity_idx,
  * to lw_state_use_chip. */
 extern int lw_state_use_chip(struct LwState *self, struct LwEntity *caster,
                              struct LwCell *target, struct LwChip *template_);
-extern int lw_fight_summon_entity(struct LwFight *self, struct LwEntity *caster,
-                                   struct LwCell *target, struct LwChip *template_,
-                                   void *value);
-
 int lw_glue_apply_use_chip(struct LwState *state, struct LwFight *fight,
                             int entity_idx, int chip_id, int target_cell_id) {
     if (state == NULL) return -100;
@@ -617,8 +590,8 @@ int lw_glue_apply_use_chip(struct LwState *state, struct LwFight *fight,
     LwCell *target = lw_map_get_cell(map, target_cell_id);
     if (target == NULL) return -104;
 
-    struct LwChip *chip = lw_chips_get_chip(chip_id);
-    if (chip == NULL) return -105;
+    struct LwChip *chip = lw_entity_get_chip(caster, chip_id);
+    if (chip == NULL) return LW_ATTACK_USE_INVALID_TARGET;
 
     /* Mirror Java's Fight.useChip: summon-typed chips dispatch through
      * Fight.summonEntity (which sets up the bulb's AI / birthTurn / etc).

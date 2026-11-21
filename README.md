@@ -13,14 +13,13 @@ engine, ported line-by-line from the official
 | **Python** | line-by-line port of Java | ~250 fights/sec | tooling, debugging, ground truth |
 | **C** (this repo) | line-by-line port of Java | ~50 000 fights/sec | AI training, self-play, MCTS |
 
-The C port traces the Java reference 1:1 — every method, every branch,
-every RNG draw — so the action stream is **byte-identical** to what the
-Java engine emits.
+The C port is based on an older Python port of the Java engine. Work toward
+parity with a pinned newer Java version is tracked in [MECHANICS.md](MECHANICS.md);
+current Java parity is not established.
 
 ## Parity status
 
-Cross-verified against the upstream Python engine on every action of the
-emitted stream:
+Historical results reported against the older Python engine:
 
 | Test | Coverage | Result |
 |---|---|---|
@@ -35,14 +34,11 @@ emitted stream:
 | `test_v2_br.py` (battle royale, 2..10 players) | 90 seeds | **90 / 90** |
 | **Total** | | **6 190 / 6 190 — 100 %** |
 
-Every action — `USE_WEAPON`, `USE_CHIP`, `LOST_LIFE`, `HEAL`,
+The historical tests compared actions including `USE_WEAPON`, `USE_CHIP`, `LOST_LIFE`, `HEAL`,
 `ADD_WEAPON_EFFECT`, `ADD_CHIP_EFFECT`, `STACK_EFFECT`, `REMOVE_EFFECT`,
 `UPDATE_EFFECT`, `MOVE_TO`, `KILL`, `INVOCATION`, `LEEK_TURN`,
-`END_TURN`, `NEW_TURN`, `START_FIGHT`, `END_FIGHT` — matches the Python
-upstream byte-for-byte, including effect parameters, damage rolls,
-critical-hit triggers, AoE falloff, summon stat rolls, A\* pathfinding
-tie-breaks, and the Bradley-Terry start order. No known divergences
-remain across solo, 1v1, NvN team, and 2-10 player battle royale.
+`END_TURN`, `NEW_TURN`, `START_FIGHT`, and `END_FIGHT`. These results do
+not establish parity with the current Java reference.
 
 ## Coverage
 
@@ -96,7 +92,66 @@ python setup.py build_ext --inplace
 python test_v2_parity.py --seeds 5
 ```
 
+For a minimal 1v1 fight without the upstream Python data files, run
+`python example_fight.py` from `bindings/python`. It registers a
+fictional weapon and prints the winner and numeric action stream.
+The example selects a weapon with `set_weapon` before firing with
+`use_weapon_on_cell`; selection costs 1 TP and emits `SET_WEAPON`. Set
+`template_id` when registering a weapon if it differs from its item ID.
+The older `fire_weapon` method remains available but silently equips without
+the selection cost or action, so it is not Java-compatible.
+`Engine.add_entity` accepts optional `start_effects=[(effect_type, value), ...]`;
+the engine applies them after fight initialization and restores them on resurrection.
+
+Missing summon templates and summon allocation or capacity failures abort the
+fight. Python raises `RuntimeError`; C callers can inspect
+`lw_state_get_fatal_error` and `lw_state_get_fatal_error_message`.
+C AI dispatchers must stop issuing actions after a fatal error. C callers must
+call `lw_state_dispose` before reinitializing or discarding a used state;
+caller-owned entities remain caller-owned unless explicitly adopted and must
+outlive the state. Call `lw_entity_dispose` when releasing such an entity.
+
+Summon templates are process-global. Python registration rejects unregistered
+chip IDs. Replacing a template affects all engines; owned templates are
+released on replacement or `lw_bulbs_clear`.
+Chip and weapon registry lookups return borrowed pointers. Retain managed
+items with `lw_item_retain` before keeping them across registry replacement,
+then call `lw_item_release`. Unmanaged C registrations remain caller-owned.
+Managed item retain/release operations are thread-safe when each caller owns a
+valid reference. Registry mutation and `lw_item_manage` require external
+synchronization; lookup pointers must be retained before releasing that lock.
+Registry arrays returned by `get_templates` are invalidated by mutation.
+
+Python summon templates accept `states` and `awakening_zone`.
+`summon(..., ai_id=...)` assigns an AI identifier; without an ID, `use_chip`
+summons without AI. Register `set_summon_ai_callback` for ordinary summon turns
+and `set_plant_awaken_callback` for plant awakenings. Clones do not inherit
+callbacks: bind callbacks and external AI state to each clone separately.
+A clone created inside an awakening retains the plant's active action context;
+after simulating its actions, call `finish_plant_awakening()` on that clone
+before continuing to other awakenings. C callers use
+`lw_state_finish_cloned_awakening`. Plant parity remains under verification.
+
 Linux is supported by the same `setup.py` (uses `gcc -O2`).
+
+## Java differential fixtures
+
+The optional harness requires Python, Git, JDK 25, Gradle, and a checkout of
+the Java generator at commit `9edc5b96cf5ae41d1b0b6eb7b482db50d98fca77`
+with its `leekscript` submodule initialized. Build the probe using the same
+compiler environment as the C library:
+
+```
+cmake --build build-msvc --config Release --target lw_java_parity_probe
+python tests\java_parity\compare.py --reference C:\path\to\leek-wars-generator --gradle C:\path\to\gradle.bat --c-probe build-msvc\lw_java_parity_probe.exe
+```
+
+Use the appropriate build and executable paths on other platforms. Add
+`--offline` only when Gradle's dependencies are cached. The runner verifies
+both pinned revisions and tracked checkout cleanliness, then compares every
+recorded action, selected state values, and operation metadata. It rejects
+missing or duplicate fixtures. Current low-level coverage is listed in
+[MECHANICS.md](MECHANICS.md); passing it does not prove complete fight parity.
 
 ## Architecture
 
@@ -111,8 +166,8 @@ bindings/
     test_v2_*.py       parity tests vs Python upstream
 ```
 
-Single translation unit per `.c` file; the engine performs no `malloc`
-during a fight (only at scenario load + state pool allocation).
+Single translation unit per `.c` file. Effects and some summon and plant
+tracking data are allocated during fights and freed with the state.
 
 ## Why a C port
 

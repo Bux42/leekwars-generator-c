@@ -24,6 +24,7 @@
 
 /* ---- Forward declarations -- ported in parallel files ----------- */
 struct LwMap;
+struct LwState;
 struct LwEntity;
 struct LwTeam;
 struct LwAttack;
@@ -32,6 +33,7 @@ struct LwChip;
 struct LwWeapon;
 struct LwItem;
 struct LwCell;
+struct LwOwnedEffect;
 
 
 /* ---- Capacities --------------------------------------------------- *
@@ -43,6 +45,20 @@ struct LwCell;
 #define LW_STATE_MAX_TEAMS       16
 #define LW_STATE_MAX_ENTITIES    64
 #define LW_STATE_MAX_COOLDOWNS   256
+
+/* Fatal engine errors are distinct from attack USE_* result codes. */
+#define LW_STATE_ERROR_SUMMON_TEMPLATE  (-1001)
+#define LW_STATE_ERROR_SUMMON_ALLOCATION (-1002)
+#define LW_STATE_ERROR_SUMMON_CAPACITY   (-1003)
+#define LW_STATE_ERROR_EFFECT_ALLOCATION (-1004)
+#define LW_STATE_ERROR_PLANT_ALLOCATION  (-1005)
+#define LW_STATE_ERROR_PLANT_DISPATCH    (-1006)
+#define LW_STATE_ERROR_SUMMON_DISPATCH   (-1007)
+
+typedef int (*lw_plant_awakening_t)(struct LwState *state,
+                                    struct LwEntity *plant,
+                                    struct LwEntity *trigger,
+                                    void *userdata);
 
 
 /* ---- Per-entity cooldown record (entity owns its own cooldowns
@@ -87,6 +103,10 @@ typedef struct LwState {
     /* Teams. */
     struct LwTeam        *teams[LW_STATE_MAX_TEAMS];
     int                   n_teams;
+    unsigned char         owned_teams[LW_STATE_MAX_TEAMS];
+    struct LwEntity      *owned_entities;
+    struct LwOwnedEffect *owned_effects;
+    int                   owns_map;
 
     /* Initial play order (snapshot of the StartOrder.compute() result). */
     struct LwEntity      *initial_order[LW_STATE_MAX_ENTITIES];
@@ -148,6 +168,12 @@ typedef struct LwState {
     /* listener (Fight in Java) -- opaque pointer to the Fight runner,
      * used only by Entity callbacks; not consumed inside State. */
     void                 *listener;
+    struct LwEntity      *awakening_plant;
+    int                   cloned_awakening;
+    lw_plant_awakening_t  plant_awakening;
+    void                 *plant_awakening_userdata;
+    int                   fatal_error;
+    char                  fatal_error_message[160];
 } LwState;
 
 
@@ -157,6 +183,27 @@ typedef struct LwState {
  * action stream, RNG seed = 0, type = SOLO, context = GARDEN, full_type
  * = TYPE_SOLO_GARDEN. */
 void lw_state_init(LwState *self);
+/* Dispose only allocations owned by this state. Borrowed objects remain
+ * caller-owned and must outlive the state. Their state/map associations are
+ * invalid after disposal; call lw_entity_dispose when releasing an entity.
+ * Call before reinitializing a previously used state. */
+void lw_state_dispose(LwState *self);
+/* Transfer ownership of a heap-allocated entity once to this initialized
+ * state. Do not separately free it, even after removal from the fight. */
+void lw_state_adopt_entity(LwState *self, struct LwEntity *entity);
+/* Fatal errors remain set until state reinitialization. An AI dispatcher
+ * must stop issuing actions and return when it observes a fatal error. */
+int lw_state_get_fatal_error(const LwState *self);
+const char *lw_state_get_fatal_error_message(const LwState *self);
+void lw_state_set_fatal_error(LwState *self, int error, const char *message);
+void lw_state_set_plant_awakening(LwState *self, lw_plant_awakening_t fn, void *userdata);
+void lw_state_check_plant_triggers(LwState *self, struct LwEntity *entity,
+                                   struct LwCell *from, struct LwCell *to);
+void lw_state_check_plant_planted(LwState *self, struct LwEntity *plant);
+void lw_state_clear_plant_triggers(LwState *self, struct LwEntity *entity);
+int lw_state_can_act(const LwState *self, const struct LwEntity *entity);
+/* Finish an awakening copied by lw_state_clone. Returns 0 if none is pending. */
+int lw_state_finish_cloned_awakening(LwState *self);
 
 
 /* public State(State state) -- deep-copy constructor.  Walks the source
@@ -164,18 +211,16 @@ void lw_state_init(LwState *self);
  *
  * Caller is responsible for the destination LwState memory; the clone
  * heap-allocates its own entities/teams/map and attaches them. Pair
- * with lw_state_free_clone() to release them.
+ * with lw_state_dispose() or lw_state_free_clone() to release them. Returns
+ * 0 on allocation failure and releases the partially built clone.
  *
- * Effects come from the shared global pool (lw_state_alloc_effect),
- * which wraps around at LW_EFFECT_POOL_CAP. For typical MCTS workloads
- * (~10 active effects/state, ~hundreds of clones in flight), the pool
- * has plenty of headroom. */
-void lw_state_clone(LwState *self, const LwState *src);
+ * Effect storage is owned by the destination state. A clone made during an
+ * awakening permits the copied plant to act until the caller finishes that
+ * awakening with lw_state_finish_cloned_awakening. */
+int lw_state_clone(LwState *self, const LwState *src);
 
 /* Release the heap blocks attached to a cloned state (entities, teams,
- * map). The LwState struct itself is owned by the caller. NEVER call
- * this on a state still owned by a Generator -- the Generator frees
- * them on dispose. */
+ * map). The LwState struct itself is owned by the caller. */
 void lw_state_free_clone(LwState *self);
 
 
@@ -317,6 +362,8 @@ void lw_state_log(LwState *self, const LwActionLog *entry);
 
 /* public void init() -- THE BIG ONE */
 void lw_state_init_fight(LwState *self);
+/* Java State.recordInitialState; call after each entity's startFight hook. */
+void lw_state_record_initial_state(LwState *self);
 
 /* public void startTurn() */
 void lw_state_start_turn(LwState *self);

@@ -19,9 +19,12 @@ void lw_effect_add_state_apply(LwEffect *self, struct LwState *state) {
      *   target.addState(this.state);
      *
      * In C, EntityState is collapsed into LW_ENTITY_STATE_* ints; the
-     * "ordinal" of the enum (0..11) equals the LW_ENTITY_STATE_* value.
+     * "ordinal" of the enum equals the LW_ENTITY_STATE_* value.
      */
     self->value = (int) self->value1;
     self->state = (int) self->value1;
     lw_entity_add_state(self->target, self->state);
+    if (self->state == LW_ENTITY_STATE_AMPUTATED) {
+        lw_entity_set_weapon(self->target, NULL);
+    }
 }

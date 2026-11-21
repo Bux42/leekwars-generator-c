@@ -44,6 +44,7 @@
  *   REDUCE_EFFECTS   (306): [target_fid, percent]
  *   REMOVE_POISONS   (307): [target_fid]
  *   REMOVE_SHACKLES  (308): [target_fid]
+ *   UPDATE_EFFECT_TURNS (309): [effect_log_id, turns]
  *
  *   ERROR     (1000)    : (no args)
  *   MAP       (1001)    : (variable, dropped from stream)

@@ -23,6 +23,9 @@
 #include "lw_constants.h"
 
 #include <stddef.h>
+#include <limits.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 
@@ -71,8 +74,9 @@ void lw_chip_init(LwChip *self,
  * Same layout as the weapons registry (sorted-by-id array + linear /
  * binary lookup).  See lw_weapons.c for the rationale.
  */
-static LwChip *s_chips[LW_CHIPS_MAX];
+static LwChip **s_chips;
 static int     s_n_chips = 0;
+static int     s_chips_capacity;
 
 
 /* public static void addChip(Chip chip) {
@@ -80,17 +84,29 @@ static int     s_n_chips = 0;
  *     Items.addChip(chip.getId());
  * }
  */
-void lw_chips_add_chip(LwChip *chip) {
-    if (chip == NULL || s_n_chips >= LW_CHIPS_MAX) return;
+int lw_chips_add_chip(LwChip *chip) {
+    if (chip == NULL) return 0;
     int id = lw_chip_get_id(chip);
 
     /* TreeMap.put: replace if key exists. */
     for (int i = 0; i < s_n_chips; i++) {
         if (lw_chip_get_id(s_chips[i]) == id) {
+            LwChip *old = s_chips[i];
+            lw_item_retain(&chip->base);
             s_chips[i] = chip;
+            lw_item_release(&old->base);
             lw_items_add_chip(id);
-            return;
+            return 1;
         }
+    }
+    if (s_n_chips == s_chips_capacity) {
+        if (s_chips_capacity > INT_MAX / 2) return 0;
+        int capacity = s_chips_capacity ? s_chips_capacity * 2 : 16;
+        if ((size_t)capacity > SIZE_MAX / sizeof(*s_chips)) return 0;
+        LwChip **chips = realloc(s_chips, (size_t)capacity * sizeof(*chips));
+        if (!chips) return 0;
+        s_chips = chips;
+        s_chips_capacity = capacity;
     }
 
     /* Insertion sort by id ascending (TreeMap iteration order). */
@@ -100,9 +116,11 @@ void lw_chips_add_chip(LwChip *chip) {
         pos--;
     }
     s_chips[pos] = chip;
+    lw_item_retain(&chip->base);
     s_n_chips++;
 
     lw_items_add_chip(id);
+    return 1;
 }
 
 
@@ -135,4 +153,12 @@ LwChip *lw_chips_get_chip_by_name(const char *name) {
 LwChip **lw_chips_get_templates(int *out_n) {
     if (out_n) *out_n = s_n_chips;
     return s_chips;
+}
+
+void lw_chips_clear(void) {
+    for (int i = 0; i < s_n_chips; i++) lw_item_release(&s_chips[i]->base);
+    free(s_chips);
+    s_chips = NULL;
+    s_n_chips = 0;
+    s_chips_capacity = 0;
 }

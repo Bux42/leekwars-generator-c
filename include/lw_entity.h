@@ -189,6 +189,19 @@ typedef struct LwEntity {
     /* ---- Subtype-specific extras ----------------------------------- */
     /* Bulb.mOwner -- only meaningful for TYPE_BULB. NULL otherwise. */
     struct LwEntity    *m_owner;
+    struct LwEntity    *owned_next;
+    int                *permanent_states;
+    int                 n_permanent_states;
+    LwStartEffect      *start_effects;
+    int                 n_start_effects;
+    int                 start_effects_capacity;
+    int                 awakening_zone;
+    int                *awakened_by;
+    int                 n_awakened_by;
+    int                 awakened_by_capacity;
+    struct LwEntity    *awakening_trigger;
+    int                 has_summon_ai;
+    int64_t             summon_ai_id;
 
     /* ---- State / opaque pointers ----------------------------------- */
     struct LwState     *state;               /* public State state */
@@ -225,7 +238,12 @@ void lw_entity_init_full(LwEntity *self, int id, const char *name, int farmer,
                          const char *team_name, int ai_id, const char *ai_name,
                          const char *farmer_name, const char *farmer_country, int hat);
 
-void lw_entity_init_copy(LwEntity *self, const LwEntity *src);
+int lw_entity_init_copy(LwEntity *self, const LwEntity *src);
+/* Snapshot combat state, retaining items but leaving effect lists and opaque
+ * AI, log, fight and register pointers for the caller to reattach. */
+int lw_entity_init_snapshot(LwEntity *self, const LwEntity *src);
+/* Release retained item references on a caller-owned entity. */
+void lw_entity_dispose(LwEntity *self);
 
 
 /* ---- Type / identity getters ---------------------------------------- */
@@ -527,6 +545,9 @@ void lw_entity_remove_launched_effect(LwEntity *self, struct LwEffect *effect);
 /* Java: public void updateEffect(Effect effect) */
 void lw_entity_update_effect         (LwEntity *self, struct LwEffect *effect);
 
+/* Java: public boolean loseEffectTurn(Effect effect) */
+int  lw_entity_lose_effect_turn      (LwEntity *self, struct LwEffect *effect);
+
 /* Java: public void clearEffects() */
 void lw_entity_clear_effects         (LwEntity *self);
 
@@ -549,6 +570,7 @@ int                  lw_entity_get_launched_effects_count (const LwEntity *self)
 struct LwEffect*     lw_entity_get_launched_effect_at     (const LwEntity *self, int index);
 int                  lw_entity_get_passive_effects_count  (const LwEntity *self);
 const LwEffectParameters* lw_entity_get_passive_effect_at(const LwEntity *self, int index);
+int  lw_entity_add_start_effect           (LwEntity *self, int type, int value);
 
 
 /* ---- States -------------------------------------------------------- */

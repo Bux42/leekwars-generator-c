@@ -7,10 +7,13 @@
  *   java_reference/src/main/java/com/leekwars/generator/entity/Bulb.java
  */
 #include "lw_bulb_template.h"
+#include "lw_chip.h"
 #include "lw_util.h"
 #include "lw_constants.h"
 
 #include <math.h>
+#include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 
 
@@ -53,10 +56,55 @@ void lw_bulb_template_init(LwBulbTemplate *self, int id, const char *name,
     self->m_min_mp = min_mp;             self->m_max_mp = max_mp;
 }
 
-void lw_bulb_template_add_chip(LwBulbTemplate *self, struct LwChip *chip) {
-    if (chip == NULL) return;
-    if (self->n_chips >= LW_BULB_TEMPLATE_MAX_CHIPS) return;
+void lw_bulb_template_dispose(LwBulbTemplate *self) {
+    if (self == NULL) return;
+    for (int i = 0; i < self->n_chips; i++) lw_item_release(&self->m_chips[i]->base);
+    free(self->m_chips);
+    free(self->m_states);
+    self->m_chips = NULL;
+    self->n_chips = 0;
+    self->chips_capacity = 0;
+    self->m_states = NULL;
+    self->n_states = 0;
+    self->states_capacity = 0;
+}
+
+int lw_bulb_template_add_state(LwBulbTemplate *self, int state) {
+    if (!self) return 0;
+    if (state <= LW_ENTITY_STATE_NONE || state > LW_ENTITY_STATE_AMPUTATED) return 1;
+    if (self->n_states == self->states_capacity) {
+        int capacity;
+        if (self->states_capacity > INT_MAX / 2) return 0;
+        capacity = self->states_capacity ? self->states_capacity * 2 : 4;
+        if ((size_t)capacity > SIZE_MAX / sizeof(*self->m_states)) return 0;
+        int *states = realloc(self->m_states, (size_t)capacity * sizeof(*states));
+        if (!states) return 0;
+        self->m_states = states;
+        self->states_capacity = capacity;
+    }
+    self->m_states[self->n_states++] = state;
+    return 1;
+}
+
+void lw_bulb_template_set_awakening_zone(LwBulbTemplate *self, int zone) {
+    self->awakening_zone = zone;
+}
+
+int lw_bulb_template_add_chip(LwBulbTemplate *self, struct LwChip *chip) {
+    if (self == NULL || chip == NULL) return 0;
+    if (self->n_chips == self->chips_capacity) {
+        int capacity;
+        if (self->chips_capacity > INT_MAX / 2) return 0;
+        capacity = self->chips_capacity ? self->chips_capacity * 2 : 8;
+        if ((size_t)capacity > SIZE_MAX / sizeof(*self->m_chips)) return 0;
+        struct LwChip **chips = realloc(self->m_chips, (size_t)capacity * sizeof(*chips));
+        if (chips == NULL) return 0;
+        self->m_chips = chips;
+        self->chips_capacity = capacity;
+    }
     self->m_chips[self->n_chips++] = chip;
+    lw_item_retain(&chip->base);
+    return 1;
 }
 
 
@@ -170,8 +218,18 @@ int lw_bulb_template_create_invocation(const LwBulbTemplate *self,
                         lw_entity_get_farmer_country(owner),
                         /*hat=*/0);
 
-    /* Tag as bulb. */
+    if (self->n_states) {
+        out_entity->permanent_states = malloc((size_t)self->n_states * sizeof(*self->m_states));
+        if (!out_entity->permanent_states) return 0;
+        memcpy(out_entity->permanent_states, self->m_states,
+               (size_t)self->n_states * sizeof(*self->m_states));
+        out_entity->n_permanent_states = self->n_states;
+    }
+    out_entity->awakening_zone = self->awakening_zone;
     out_entity->type = LW_ENTITY_TYPE_BULB;
+    for (int i = 0; i < self->n_states; i++) {
+        if (self->m_states[i] == LW_ENTITY_STATE_ROOTED) out_entity->type = LW_ENTITY_TYPE_PLANT;
+    }
 
     /* setCompositionName(owner.getCompositionName()); */
     lw_entity_set_composition_name(out_entity, lw_entity_get_composition_name(owner));
@@ -195,19 +253,23 @@ int lw_bulb_template_create_invocation(const LwBulbTemplate *self,
  *
  * Java: private static TreeMap<Integer, BulbTemplate> sTemplates = new TreeMap<>();
  *
- * Linear scan over a small, sorted array; bulb template ids are sparse
- * so we just keep them in the order they're registered (the only
- * iteration happens through getInvocationTemplate which is keyed). */
+ * Linear scan in registration order; ids are sparse. */
 
-static LwBulbTemplate* g_bulbs_registry[LW_BULB_TEMPLATE_REGISTRY_MAX];
-static int             g_bulbs_registry_n = 0;
+typedef struct {
+    LwBulbTemplate *template_;
+    int owned;
+} LwBulbRegistryEntry;
+
+static LwBulbRegistryEntry *g_bulbs_registry;
+static size_t g_bulbs_registry_n;
+static size_t g_bulbs_registry_capacity;
 
 
 /* Java: public static BulbTemplate getInvocationTemplate(int id) { return sTemplates.get(id); } */
 LwBulbTemplate* lw_bulbs_get_invocation_template(int id) {
-    for (int i = 0; i < g_bulbs_registry_n; i++) {
-        if (lw_bulb_template_get_id(g_bulbs_registry[i]) == id) {
-            return g_bulbs_registry[i];
+    for (size_t i = 0; i < g_bulbs_registry_n; i++) {
+        if (lw_bulb_template_get_id(g_bulbs_registry[i].template_) == id) {
+            return g_bulbs_registry[i].template_;
         }
     }
     return NULL;
@@ -219,22 +281,56 @@ LwBulbTemplate* lw_bulbs_get_invocation_template(int id) {
  *
  * Replace if id already present (TreeMap.put semantics).
  */
-void lw_bulbs_add_invocation_template(LwBulbTemplate *invocation) {
+static int lw_bulbs_add_template(LwBulbTemplate *invocation, int owned) {
+    if (invocation == NULL) return 0;
     int id = lw_bulb_template_get_id(invocation);
-    for (int i = 0; i < g_bulbs_registry_n; i++) {
-        if (lw_bulb_template_get_id(g_bulbs_registry[i]) == id) {
-            g_bulbs_registry[i] = invocation;
-            return;
+    for (size_t i = 0; i < g_bulbs_registry_n; i++) {
+        if (lw_bulb_template_get_id(g_bulbs_registry[i].template_) == id) {
+            if (g_bulbs_registry[i].template_ == invocation) {
+                if (owned) g_bulbs_registry[i].owned = 1;
+                return 1;
+            }
+            if (g_bulbs_registry[i].owned) {
+                lw_bulb_template_dispose(g_bulbs_registry[i].template_);
+                free(g_bulbs_registry[i].template_);
+            }
+            g_bulbs_registry[i].template_ = invocation;
+            g_bulbs_registry[i].owned = owned;
+            return 1;
         }
     }
-    if (g_bulbs_registry_n >= LW_BULB_TEMPLATE_REGISTRY_MAX) return;
-    g_bulbs_registry[g_bulbs_registry_n++] = invocation;
+    if (g_bulbs_registry_n == g_bulbs_registry_capacity) {
+        size_t capacity = g_bulbs_registry_capacity ? g_bulbs_registry_capacity * 2 : 16;
+        if (capacity < g_bulbs_registry_capacity ||
+            capacity > SIZE_MAX / sizeof(*g_bulbs_registry)) return 0;
+        LwBulbRegistryEntry *entries = realloc(g_bulbs_registry, capacity * sizeof(*entries));
+        if (entries == NULL) return 0;
+        g_bulbs_registry = entries;
+        g_bulbs_registry_capacity = capacity;
+    }
+    g_bulbs_registry[g_bulbs_registry_n].template_ = invocation;
+    g_bulbs_registry[g_bulbs_registry_n++].owned = owned;
+    return 1;
+}
+
+int lw_bulbs_add_invocation_template(LwBulbTemplate *invocation) {
+    return lw_bulbs_add_template(invocation, 0);
+}
+
+int lw_bulbs_add_owned_invocation_template(LwBulbTemplate *invocation) {
+    return lw_bulbs_add_template(invocation, 1);
 }
 
 
 void lw_bulbs_clear(void) {
-    for (int i = 0; i < g_bulbs_registry_n; i++) {
-        g_bulbs_registry[i] = NULL;
+    for (size_t i = 0; i < g_bulbs_registry_n; i++) {
+        if (g_bulbs_registry[i].owned) {
+            lw_bulb_template_dispose(g_bulbs_registry[i].template_);
+            free(g_bulbs_registry[i].template_);
+        }
     }
+    free(g_bulbs_registry);
+    g_bulbs_registry = NULL;
     g_bulbs_registry_n = 0;
+    g_bulbs_registry_capacity = 0;
 }

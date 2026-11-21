@@ -45,7 +45,8 @@ void lw_leek_init_full(LwEntity *self, int id, const char *name, int farmer,
 
 
 /* Java: public Leek(Leek leek) { super(leek); } */
-void lw_leek_init_copy(LwEntity *self, const LwEntity *leek) {
-    lw_entity_init_copy(self, leek);
+int lw_leek_init_copy(LwEntity *self, const LwEntity *leek) {
+    if (!lw_entity_init_copy(self, leek)) return 0;
     self->type = LW_ENTITY_TYPE_LEEK;
+    return 1;
 }

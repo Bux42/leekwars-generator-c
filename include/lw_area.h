@@ -29,7 +29,7 @@
  * (some not yet ported). We only need the pointer types here. */
 struct LwMap;
 struct LwAttack;
-struct LwLeek;
+struct LwEntity;
 
 
 /* ---- Java: Area type constants ---------------------------------- */
@@ -127,7 +127,7 @@ int lw_area_get_area(const LwArea *self,
                      const struct LwMap *map,
                      LwCell *cast,
                      LwCell *target,
-                     struct LwLeek *caster,
+                     const struct LwEntity *caster,
                      LwCell *out_buf,
                      int out_cap);
 

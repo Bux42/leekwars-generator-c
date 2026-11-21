@@ -24,6 +24,8 @@
 
 #include <math.h>
 #include <stddef.h>
+#include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 
 
@@ -36,26 +38,45 @@
  * get_turns / set_turns / etc.) -- we use those directly. Same for
  * lw_effect_params.h, lw_attack.h, lw_weapon.h, lw_chip.h.
  *
- * The lw_state_statistics_* helpers wrap state->statistics-> dispatch
- * (see the Java line `state.statistics.X`); we forward-declare them
- * here because they are not all exposed as inline dispatchers in
- * lw_statistics.h. They will be implemented in lw_state.c as thin
- * wrappers around state->statistics-> calls. */
+ * The lw_state_statistics_* helpers wrap state->statistics dispatch. */
 
-void  lw_state_statistics_damage           (struct LwState *state, struct LwEntity *target,
-                                            struct LwEntity *attacker, int pv, int damage_type,
-                                            struct LwEffect *effect);
-void  lw_state_statistics_heal             (struct LwState *state, struct LwEntity *healer,
-                                            struct LwEntity *target, int pv);
-void  lw_state_statistics_vitality         (struct LwState *state, struct LwEntity *target,
-                                            struct LwEntity *caster, int vitality);
-void  lw_state_statistics_characteristics  (struct LwState *state, struct LwEntity *entity);
-void  lw_state_statistics_update_stat      (struct LwState *state, struct LwEntity *entity,
-                                            int id, int delta, struct LwEntity *caster);
-void  lw_state_statistics_use_tp           (struct LwState *state, int tp);
-void  lw_state_statistics_entity_turn      (struct LwState *state, struct LwEntity *entity);
-void  lw_state_statistics_antidote         (struct LwState *state, struct LwEntity *target,
-                                            struct LwEntity *caster, int poisons_removed);
+static void lw_state_statistics_damage(LwState *s, LwEntity *target, LwEntity *attacker,
+                                       int pv, LwDamageType type, LwEffect *effect) {
+    LwStatisticsManager *m = s ? s->statistics : NULL;
+    if (m && m->damage) m->damage(m, target, attacker, pv, type, effect);
+}
+static void lw_state_statistics_heal(LwState *s, LwEntity *healer, LwEntity *target, int pv) {
+    LwStatisticsManager *m = s ? s->statistics : NULL;
+    if (m && m->heal) m->heal(m, healer, target, pv);
+}
+static void lw_state_statistics_vitality(LwState *s, LwEntity *target, LwEntity *caster, int vitality) {
+    LwStatisticsManager *m = s ? s->statistics : NULL;
+    if (m && m->vitality) m->vitality(m, target, caster, vitality);
+}
+static void lw_state_statistics_characteristics(LwState *s, LwEntity *entity) {
+    LwStatisticsManager *m = s ? s->statistics : NULL;
+    if (m && m->characteristics) m->characteristics(m, entity);
+}
+static void lw_state_statistics_update_stat(LwState *s, LwEntity *entity, int id, int delta, LwEntity *caster) {
+    LwStatisticsManager *m = s ? s->statistics : NULL;
+    if (m && m->update_stat) m->update_stat(m, entity, id, delta, caster);
+}
+static void lw_state_statistics_use_tp(LwState *s, int tp) {
+    LwStatisticsManager *m = s ? s->statistics : NULL;
+    if (m && m->use_tp) m->use_tp(m, tp);
+}
+static void lw_state_statistics_use_mp(LwState *s, int mp) {
+    LwStatisticsManager *m = s ? s->statistics : NULL;
+    if (m && m->use_mp) m->use_mp(m, mp);
+}
+static void lw_state_statistics_entity_turn(LwState *s, LwEntity *entity) {
+    LwStatisticsManager *m = s ? s->statistics : NULL;
+    if (m && m->entity_turn) m->entity_turn(m, entity);
+}
+static void lw_state_statistics_antidote(LwState *s, LwEntity *target, LwEntity *caster, int removed) {
+    LwStatisticsManager *m = s ? s->statistics : NULL;
+    if (m && m->antidote) m->antidote(m, target, caster, removed);
+}
 
 
 /* MAX_TURNS constant (state/State.MAX_TURNS) */
@@ -287,9 +308,23 @@ void lw_entity_init_full(LwEntity *self, int id, const char *name, int farmer,
  *   - effects / launchedEffects are explicitly NOT copied (Java comment).
  *   - mCooldown is deep-copied via TreeMap copy ctor.
  */
-void lw_entity_init_copy(LwEntity *self, const LwEntity *entity) {
+int lw_entity_init_copy(LwEntity *self, const LwEntity *entity) {
 
     lw_entity_zero_init(self);
+    if (entity->n_start_effects < 0 ||
+        (entity->n_start_effects > 0 && entity->start_effects == NULL) ||
+        (size_t)entity->n_start_effects > (size_t)-1 / sizeof(*self->start_effects)) {
+        return 0;
+    }
+    if (entity->n_start_effects > 0) {
+        self->start_effects = malloc((size_t)entity->n_start_effects *
+                                     sizeof(*self->start_effects));
+        if (!self->start_effects) return 0;
+        memcpy(self->start_effects, entity->start_effects,
+               (size_t)entity->n_start_effects * sizeof(*self->start_effects));
+        self->n_start_effects = entity->n_start_effects;
+        self->start_effects_capacity = entity->n_start_effects;
+    }
 
     self->m_id = entity->m_id;
     self->fight_id = entity->fight_id;
@@ -310,16 +345,21 @@ void lw_entity_init_copy(LwEntity *self, const LwEntity *entity) {
 
     /* mWeapons aliased (immutable in Java). */
     self->n_weapons = entity->n_weapons;
-    for (int i = 0; i < entity->n_weapons; i++) self->m_weapons[i] = entity->m_weapons[i];
+    for (int i = 0; i < entity->n_weapons; i++) {
+        self->m_weapons[i] = entity->m_weapons[i];
+        lw_item_retain(&self->m_weapons[i]->base);
+    }
 
     /* mChips aliased. */
     self->n_chips = entity->n_chips;
     for (int i = 0; i < entity->n_chips; i++) {
         self->m_chips[i] = entity->m_chips[i];
+        lw_item_retain(&self->m_chips[i]->base);
         self->m_chip_ids[i] = entity->m_chip_ids[i];
     }
 
     self->weapon = entity->weapon;
+    if (self->weapon) lw_item_retain(&self->weapon->base);
 
     /* mCooldown = new TreeMap<>(entity.mCooldown); */
     self->n_cooldowns = entity->n_cooldowns;
@@ -335,11 +375,99 @@ void lw_entity_init_copy(LwEntity *self, const LwEntity *entity) {
     for (int i = 0; i < entity->n_passive_effects; i++) {
         self->passive_effects[i] = entity->passive_effects[i];
     }
+    self->n_start_effects = entity->n_start_effects;
+    memcpy(self->start_effects, entity->start_effects,
+           (size_t)entity->n_start_effects * sizeof(*self->start_effects));
 
     /* effects / launchedEffects intentionally NOT copied -- Java comment:
      *   // protected final ArrayList<Effect> effects = new ArrayList<Effect>();
      *   // private final ArrayList<Effect> launchedEffects = new ArrayList<Effect>();
      */
+    return 1;
+}
+
+int lw_entity_init_snapshot(LwEntity *self, const LwEntity *src) {
+    memcpy(self, src, sizeof(*self));
+    self->permanent_states = NULL;
+    self->awakened_by = NULL;
+    self->awakened_by_capacity = 0;
+    self->start_effects = NULL;
+    self->start_effects_capacity = 0;
+    if (src->n_permanent_states) {
+        self->permanent_states = malloc((size_t)src->n_permanent_states * sizeof(*self->permanent_states));
+        if (!self->permanent_states) return 0;
+        memcpy(self->permanent_states, src->permanent_states,
+               (size_t)src->n_permanent_states * sizeof(*self->permanent_states));
+    }
+    if (src->n_awakened_by) {
+        self->awakened_by = malloc((size_t)src->n_awakened_by * sizeof(*self->awakened_by));
+        if (!self->awakened_by) {
+            free(self->permanent_states);
+            self->permanent_states = NULL;
+            return 0;
+        }
+        memcpy(self->awakened_by, src->awakened_by,
+               (size_t)src->n_awakened_by * sizeof(*self->awakened_by));
+        self->awakened_by_capacity = src->n_awakened_by;
+    }
+    if (src->n_start_effects) {
+        if (src->n_start_effects < 0 || src->start_effects == NULL ||
+            (size_t)src->n_start_effects >
+                (size_t)-1 / sizeof(*self->start_effects)) {
+            free(self->permanent_states);
+            free(self->awakened_by);
+            self->permanent_states = NULL;
+            self->awakened_by = NULL;
+            return 0;
+        }
+        self->start_effects = malloc((size_t)src->n_start_effects * sizeof(*self->start_effects));
+        if (!self->start_effects) {
+            free(self->permanent_states);
+            free(self->awakened_by);
+            self->permanent_states = NULL;
+            self->awakened_by = NULL;
+            return 0;
+        }
+        memcpy(self->start_effects, src->start_effects,
+               (size_t)src->n_start_effects * sizeof(*self->start_effects));
+        self->start_effects_capacity = src->n_start_effects;
+    }
+    for (int i = 0; i < self->n_weapons; i++) lw_item_retain(&self->m_weapons[i]->base);
+    for (int i = 0; i < self->n_chips; i++) lw_item_retain(&self->m_chips[i]->base);
+    if (self->weapon) lw_item_retain(&self->weapon->base);
+    memset(self->effects, 0, sizeof(self->effects));
+    memset(self->launched_effects, 0, sizeof(self->launched_effects));
+    self->n_effects = 0;
+    self->n_launched_effects = 0;
+    self->owned_next = NULL;
+    self->ai = NULL;
+    self->ai_file = NULL;
+    self->logs = NULL;
+    self->fight = NULL;
+    self->m_register = NULL;
+    return 1;
+}
+
+void lw_entity_dispose(LwEntity *self) {
+    if (!self) return;
+    free(self->permanent_states);
+    free(self->awakened_by);
+    free(self->start_effects);
+    self->permanent_states = NULL;
+    self->awakened_by = NULL;
+    self->start_effects = NULL;
+    self->n_permanent_states = 0;
+    self->n_awakened_by = 0;
+    self->awakened_by_capacity = 0;
+    self->n_start_effects = 0;
+    self->start_effects_capacity = 0;
+    for (int i = 0; i < self->n_weapons; i++) lw_item_release(&self->m_weapons[i]->base);
+    for (int i = 0; i < self->n_chips; i++) lw_item_release(&self->m_chips[i]->base);
+    if (self->weapon) lw_item_release(&self->weapon->base);
+    self->n_weapons = 0;
+    self->n_chips = 0;
+    self->n_passive_effects = 0;
+    self->weapon = NULL;
 }
 
 
@@ -355,12 +483,12 @@ LwEntity* lw_entity_get_leek(LwEntity *self) {
 
 /* Java: public boolean isSummon() { return false; } / Bulb overrides -> true. */
 int lw_entity_is_summon(const LwEntity *self) {
-    return (self->type == LW_ENTITY_TYPE_BULB) ? 1 : 0;
+    return self->type == LW_ENTITY_TYPE_BULB || self->type == LW_ENTITY_TYPE_PLANT;
 }
 
 /* Java: public Entity getSummoner() { return null; } / Bulb overrides -> mOwner. */
 LwEntity* lw_entity_get_summoner(const LwEntity *self) {
-    if (self->type == LW_ENTITY_TYPE_BULB) return self->m_owner;
+    if (lw_entity_is_summon(self)) return self->m_owner;
     return NULL;
 }
 
@@ -916,6 +1044,7 @@ void lw_entity_activate_on_moved_passive_effect(LwEntity *self,
 /* Java: public void activateOnDamagePassiveEffect(EffectParameters effect, Attack attack, int inputValue) {
  *     if (effect.getId() == Effect.TYPE_DAMAGE_TO_ABSOLUTE_SHIELD) { ... }
  *     else if (effect.getId() == Effect.TYPE_DAMAGE_TO_STRENGTH) { ... }
+ *     else if (effect.getId() == Effect.TYPE_DAMAGE_TO_RESISTANCE) { ... }
  * }
  */
 void lw_entity_activate_on_damage_passive_effect(LwEntity *self,
@@ -934,6 +1063,14 @@ void lw_entity_activate_on_damage_passive_effect(LwEntity *self,
         double value = input_value * (lw_effect_parameters_get_value1(effect) / 100.0);
         int stackable = (lw_effect_parameters_get_modifiers(effect) & LW_MODIFIER_STACKABLE) != 0;
         lw_effect_create_effect(self->state, LW_EFFECT_TYPE_RAW_BUFF_STRENGTH,
+                                  lw_effect_parameters_get_turns(effect), 1,
+                                  value, 0, 0, self, self, attack, 0, stackable,
+                                  0, 0, 0, lw_effect_parameters_get_modifiers(effect));
+    }
+    else if (eid == LW_EFFECT_TYPE_DAMAGE_TO_RESISTANCE) {
+        double value = input_value * (lw_effect_parameters_get_value1(effect) / 100.0);
+        int stackable = (lw_effect_parameters_get_modifiers(effect) & LW_MODIFIER_STACKABLE) != 0;
+        lw_effect_create_effect(self->state, LW_EFFECT_TYPE_RAW_BUFF_RESISTANCE,
                                   lw_effect_parameters_get_turns(effect), 1,
                                   value, 0, 0, self, self, attack, 0, stackable,
                                   0, 0, 0, lw_effect_parameters_get_modifiers(effect));
@@ -1019,40 +1156,15 @@ void lw_entity_activate_on_kill_passive_effect(LwEntity *self,
 
 /* ---- Turn lifecycle ----------------------------------------------- */
 
-/* Java: public void startTurn() {
- *     applyCoolDown();
- *     state.statistics.entityTurn(this);
- *
- *     ArrayList<Effect> effectsCopy = new ArrayList<Effect>(this.effects);
- *     for (Effect effect : effectsCopy) {
- *         effect.applyStartTurn(state);
- *         if (isDead()) {
- *             return;
- *         }
- *     }
- *
- *     for (int e = 0; e < launchedEffects.size(); ++e) {
- *         Effect effect = launchedEffects.get(e);
- *         if (effect.getTurns() != -1) { // Decrease duration
- *             effect.setTurns(effect.getTurns() - 1);
- *         }
- *         if (effect.getTurns() == 0) { // Effect done
- *             effect.getTarget().removeEffect(effect);
- *             launchedEffects.remove(e);
- *             e--;
- *         }
- *     }
- * }
- *
- * NOTE: order matters for action stream:
- *   1) applyCoolDown -- mutates cooldowns, no logs
- *   2) statistics.entityTurn -- logs LEEK_TURN
- *   3) effectsCopy iteration -- logs poison damage etc
- *   4) launchedEffects walk -- logs effect removals
- */
+static int lw_effect_is_periodic(const struct LwEffect *effect) {
+    int id = lw_effect_get_id(effect);
+    return id == LW_EFFECT_TYPE_POISON || id == LW_EFFECT_TYPE_HEAL
+        || id == LW_EFFECT_TYPE_AFTEREFFECT;
+}
+
 void lw_entity_start_turn(LwEntity *self) {
 
-    lw_entity_apply_cool_down(self);
+    if (self->awakening_zone <= 0) lw_entity_apply_cool_down(self);
 
     lw_state_statistics_entity_turn(self->state, self);
 
@@ -1063,14 +1175,19 @@ void lw_entity_start_turn(LwEntity *self) {
 
     for (int i = 0; i < n_copy; i++) {
         struct LwEffect *effect = effects_copy[i];
+        if (!lw_effect_is_periodic(effect)) continue;
         lw_effect_apply_start_turn(effect, self->state);
         if (lw_entity_is_dead(self)) {
             return;
+        }
+        if (lw_effect_get_turns(effect) != -1) {
+            lw_entity_lose_effect_turn(self, effect);
         }
     }
 
     for (int e = 0; e < self->n_launched_effects; ++e) {
         struct LwEffect *effect = self->launched_effects[e];
+        if (lw_effect_is_periodic(effect)) continue;
         if (lw_effect_get_turns(effect) != -1) {  /* Decrease duration */
             lw_effect_set_turns(effect, lw_effect_get_turns(effect) - 1);
         }
@@ -1246,6 +1363,8 @@ void lw_entity_add_chip(LwEntity *self, struct LwChip *chip) {
     /* Replace if already present */
     for (int i = 0; i < self->n_chips; i++) {
         if (self->m_chip_ids[i] == chip_id) {
+            lw_item_retain(&chip->base);
+            lw_item_release(&self->m_chips[i]->base);
             self->m_chips[i] = chip;
             return;
         }
@@ -1260,6 +1379,7 @@ void lw_entity_add_chip(LwEntity *self, struct LwChip *chip) {
         self->m_chip_ids[i] = self->m_chip_ids[i - 1];
     }
     self->m_chips[pos] = chip;
+    lw_item_retain(&chip->base);
     self->m_chip_ids[pos] = chip_id;
     self->n_chips++;
 }
@@ -1347,6 +1467,7 @@ void lw_entity_add_item_use(LwEntity *self, int id) {
  */
 void lw_entity_add_weapon(LwEntity *self, struct LwWeapon *w) {
     if (self->n_weapons >= LW_ENTITY_MAX_WEAPONS) return;
+    lw_item_retain(&w->base);
     self->m_weapons[self->n_weapons++] = w;
     int npe = lw_weapon_get_passive_effects_count(w);
     for (int i = 0; i < npe; i++) {
@@ -1370,7 +1491,11 @@ struct LwWeapon* lw_entity_get_weapon_at(const LwEntity *self, int index) {
 }
 
 struct LwWeapon* lw_entity_get_weapon(const LwEntity *self) { return self->weapon; }
-void             lw_entity_set_weapon(LwEntity *self, struct LwWeapon *w) { self->weapon = w; }
+void lw_entity_set_weapon(LwEntity *self, struct LwWeapon *w) {
+    if (w) lw_item_retain(&w->base);
+    if (self->weapon) lw_item_release(&self->weapon->base);
+    self->weapon = w;
+}
 
 
 /* ---- Effects ------------------------------------------------------- */
@@ -1427,6 +1552,14 @@ void lw_entity_update_effect(LwEntity *self, struct LwEffect *effect) {
     lw_actions_log_update_effect(lw_state_get_actions(self->state),
                                  lw_effect_get_log_id(effect),
                                  lw_effect_get_value(effect));
+}
+
+int lw_entity_lose_effect_turn(LwEntity *self, struct LwEffect *effect) {
+    lw_effect_set_turns(effect, lw_effect_get_turns(effect) - 1);
+    if (lw_effect_get_turns(effect) > 0) return 0;
+    lw_entity_remove_launched_effect(lw_effect_get_caster(effect), effect);
+    lw_entity_remove_effect(self, effect);
+    return 1;
 }
 
 /* Java: public void clearEffects() {
@@ -1558,9 +1691,11 @@ void lw_entity_clear_poisons(LwEntity *self, LwEntity *caster) {
 /* Java: public void removeShackles() {
  *     for (int i = 0; i < effects.size(); ++i) {
  *         Effect effect = effects.get(i);
+ *         if ((effect.getModifiers() & Effect.MODIFIER_IRREDUCTIBLE) != 0) continue;
  *         if (effect instanceof EffectShackleTP || effect instanceof EffectShackleMP
  *             || effect instanceof EffectShackleAgility || effect instanceof EffectShackleMagic
- *             || effect instanceof EffectShackleStrength || effect instanceof EffectShackleWisdom) {
+ *             || effect instanceof EffectShackleStrength || effect instanceof EffectRawShackleStrength
+ *             || effect instanceof EffectShackleWisdom) {
  *             effect.getCaster().removeLaunchedEffect(effect);
  *             removeEffect(effect);
  *             i--;
@@ -1571,13 +1706,14 @@ void lw_entity_clear_poisons(LwEntity *self, LwEntity *caster) {
 void lw_entity_remove_shackles(LwEntity *self) {
     for (int i = 0; i < self->n_effects; ++i) {
         struct LwEffect *effect = self->effects[i];
-        /* Java: effect instanceof EffectShackle{TP,MP,Agility,Magic,Strength,Wisdom} */
         int eid = lw_effect_get_id(effect);
+        if ((lw_effect_get_modifiers(effect) & LW_MODIFIER_IRREDUCTIBLE) != 0) continue;
         if (eid == LW_EFFECT_TYPE_SHACKLE_TP
                 || eid == LW_EFFECT_TYPE_SHACKLE_MP
                 || eid == LW_EFFECT_TYPE_SHACKLE_AGILITY
                 || eid == LW_EFFECT_TYPE_SHACKLE_MAGIC
                 || eid == LW_EFFECT_TYPE_SHACKLE_STRENGTH
+                || eid == LW_EFFECT_TYPE_RAW_SHACKLE_STRENGTH
                 || eid == LW_EFFECT_TYPE_SHACKLE_WISDOM) {
             LwEntity *ec = lw_effect_get_caster(effect);
             if (ec != NULL) lw_entity_remove_launched_effect(ec, effect);
@@ -1603,6 +1739,26 @@ int               lw_entity_get_passive_effects_count(const LwEntity *self) { re
 const LwEffectParameters* lw_entity_get_passive_effect_at(const LwEntity *self, int index) {
     if (index < 0 || index >= self->n_passive_effects) return NULL;
     return self->passive_effects[index];
+}
+
+int lw_entity_add_start_effect(LwEntity *self, int type, int value) {
+    if (self == NULL || self->n_start_effects < 0 ||
+        self->start_effects_capacity < self->n_start_effects ||
+        (self->n_start_effects > 0 && self->start_effects == NULL)) return 0;
+    if (self->n_start_effects == self->start_effects_capacity) {
+        if (self->start_effects_capacity > INT_MAX / 2) return 0;
+        int capacity = self->start_effects_capacity ? self->start_effects_capacity * 2 : 4;
+        if ((size_t)capacity > (size_t)-1 / sizeof(*self->start_effects)) return 0;
+        LwStartEffect *items = realloc(self->start_effects,
+                                       (size_t)capacity * sizeof(*items));
+        if (!items) return 0;
+        self->start_effects = items;
+        self->start_effects_capacity = capacity;
+    }
+    self->start_effects[self->n_start_effects].type = type;
+    self->start_effects[self->n_start_effects].value = value;
+    self->n_start_effects++;
+    return 1;
 }
 
 
@@ -1643,12 +1799,12 @@ void lw_entity_use_tp(LwEntity *self, int tp) {
 
 /* Java: public void useMP(int mp) {
  *     usedMP += mp;
- *     state.statistics.useTP(mp);  // <- Java actually calls useTP here (verbatim)
+ *     state.statistics.useMP(mp);
  * }
  */
 void lw_entity_use_mp(LwEntity *self, int mp) {
     self->used_mp += mp;
-    lw_state_statistics_use_tp(self->state, mp);
+    lw_state_statistics_use_mp(self->state, mp);
 }
 
 

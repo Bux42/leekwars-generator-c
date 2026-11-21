@@ -343,6 +343,9 @@ LwCell* lw_map_get_push_last_available_cell(LwMap *self,
                                             LwCell *target,
                                             const LwCell *caster);
 
+LwCell* lw_map_get_repel_last_available_cell(LwMap *self, LwCell *entity,
+                                             const LwCell *caster, int distance);
+
 /* public Cell getAttractLastAvailableCell(Cell entity, Cell target, Cell caster) */
 LwCell* lw_map_get_attract_last_available_cell(LwMap *self,
                                                LwCell *entity,
@@ -474,7 +477,7 @@ int    lw_map_get_valid_cells_around_obstacle(LwMap *self,
  *                                   int minRange, int maxRange)
  * Returns the first cell with an entity along the line from -> target,
  * within [minRange,maxRange]. NULL if none. */
-LwCell* lw_map_get_first_entity(LwMap *self,
+LwCell* lw_map_get_first_entity(const LwMap *self,
                                 LwCell *from, LwCell *target,
                                 int min_range, int max_range);
 

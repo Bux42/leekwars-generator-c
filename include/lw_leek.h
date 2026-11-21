@@ -30,7 +30,7 @@ void lw_leek_init_full(LwEntity *self, int id, const char *name, int farmer,
                        const char *farmer_name, const char *farmer_country, int hat);
 
 /* Java: public Leek(Leek leek) { super(leek); } */
-void lw_leek_init_copy(LwEntity *self, const LwEntity *leek);
+int lw_leek_init_copy(LwEntity *self, const LwEntity *leek);
 
 
 #endif /* LW_LEEK_H */
