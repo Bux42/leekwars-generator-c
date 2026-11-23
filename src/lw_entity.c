@@ -112,25 +112,27 @@ static int lw_iie_find(const LwIntIntEntry *arr, int n, int key) {
     return -1;
 }
 
-/* Insert / overwrite key, keeping the array sorted ascending by key. */
-static void lw_iie_put(LwIntIntEntry *arr, int *pn, int cap, int key, int value) {
+/* Insert / overwrite key, keeping the array sorted ascending by key.
+ * Returns 0 if the array is full, else 1. */
+static int lw_iie_put(LwIntIntEntry *arr, int *pn, int cap, int key, int value) {
     int idx = lw_iie_find(arr, *pn, key);
     if (idx >= 0) {
         arr[idx].value = value;
-        return;
+        return 1;
     }
     /* Find insertion position (sorted ascending). */
     int pos = *pn;
     for (int i = 0; i < *pn; i++) {
         if (key < arr[i].key) { pos = i; break; }
     }
-    if (*pn >= cap) return;  /* defensive: drop if over capacity */
+    if (*pn >= cap) return 0;
     /* Shift right. */
     for (int i = *pn; i > pos; i--) arr[i] = arr[i - 1];
     arr[pos].key = key;
     arr[pos].value = value;
     arr[pos].present = 1;
     (*pn)++;
+    return 1;
 }
 
 static void lw_iie_remove(LwIntIntEntry *arr, int *pn, int key) {
@@ -152,11 +154,17 @@ static int lw_effect_arr_find(struct LwEffect **arr, int n, struct LwEffect *e) 
     return -1;
 }
 
-/* Append. */
-static void lw_effect_arr_add(struct LwEffect **arr, int *pn, int cap, struct LwEffect *e) {
-    if (*pn >= cap) return;
+/* Append. Returns 0 if the array is full, else 1. */
+static int lw_effect_arr_add(struct LwEffect **arr, int *pn, int cap, struct LwEffect *e) {
+    if (*pn >= cap) return 0;
     arr[*pn] = e;
     (*pn)++;
+    return 1;
+}
+
+/* Java's collections have no limit: going on would silently diverge. */
+static void lw_entity_capacity_error(LwEntity *self, const char *message) {
+    if (self->state) lw_state_set_fatal_error(self->state, LW_STATE_ERROR_CAPACITY, message);
 }
 
 /* Remove first occurrence; preserves order. */
@@ -1357,7 +1365,6 @@ void lw_entity_apply_cool_down(LwEntity *self) {
 void lw_entity_add_chip(LwEntity *self, struct LwChip *chip) {
     if (chip == NULL) return;
     if (self->n_chips >= lw_entity_get_ram(self)) return;
-    if (self->n_chips >= LW_ENTITY_MAX_CHIPS) return;
 
     int chip_id = lw_chip_get_id(chip);
     /* Replace if already present */
@@ -1368,6 +1375,10 @@ void lw_entity_add_chip(LwEntity *self, struct LwChip *chip) {
             self->m_chips[i] = chip;
             return;
         }
+    }
+    if (self->n_chips >= LW_ENTITY_MAX_CHIPS) {
+        lw_entity_capacity_error(self, "too many chips on an entity");
+        return;
     }
     /* Find insertion position (sorted by id ascending). */
     int pos = self->n_chips;
@@ -1404,8 +1415,9 @@ struct LwChip* lw_entity_get_chip_at(const LwEntity *self, int index) {
  */
 void lw_entity_add_cooldown(LwEntity *self, struct LwChip *chip, int cooldown) {
     int v = (cooldown == -1) ? LW_ENTITY_MAX_TURNS_PLUS_2 : cooldown;
-    lw_iie_put(self->m_cooldown, &self->n_cooldowns,
-               LW_ENTITY_MAX_COOLDOWNS, lw_chip_get_id(chip), v);
+    if (!lw_iie_put(self->m_cooldown, &self->n_cooldowns,
+                    LW_ENTITY_MAX_COOLDOWNS, lw_chip_get_id(chip), v))
+        lw_entity_capacity_error(self, "too many cooldowns on an entity");
 }
 
 /* Java: public boolean hasCooldown(int chipID) { return mCooldown.containsKey(chipID); } */
@@ -1453,9 +1465,9 @@ void lw_entity_add_item_use(LwEntity *self, int id) {
     int idx = lw_iie_find(self->item_uses, self->n_item_uses, id);
     if (idx >= 0) {
         self->item_uses[idx].value += 1;
-    } else {
-        lw_iie_put(self->item_uses, &self->n_item_uses,
-                   LW_ENTITY_MAX_ITEM_USES, id, 1);
+    } else if (!lw_iie_put(self->item_uses, &self->n_item_uses,
+                           LW_ENTITY_MAX_ITEM_USES, id, 1)) {
+        lw_entity_capacity_error(self, "too many items used by an entity in a turn");
     }
 }
 
@@ -1466,12 +1478,18 @@ void lw_entity_add_item_use(LwEntity *self, int id) {
  * }
  */
 void lw_entity_add_weapon(LwEntity *self, struct LwWeapon *w) {
-    if (self->n_weapons >= LW_ENTITY_MAX_WEAPONS) return;
+    if (self->n_weapons >= LW_ENTITY_MAX_WEAPONS) {
+        lw_entity_capacity_error(self, "too many weapons on an entity");
+        return;
+    }
     lw_item_retain(&w->base);
     self->m_weapons[self->n_weapons++] = w;
     int npe = lw_weapon_get_passive_effects_count(w);
     for (int i = 0; i < npe; i++) {
-        if (self->n_passive_effects >= LW_ENTITY_MAX_PASSIVE_EFFECTS) return;
+        if (self->n_passive_effects >= LW_ENTITY_MAX_PASSIVE_EFFECTS) {
+            lw_entity_capacity_error(self, "too many passive effects on an entity");
+            return;
+        }
         self->passive_effects[self->n_passive_effects++] = &lw_weapon_get_passive_effects(w)[i];
     }
 }
@@ -1517,7 +1535,8 @@ int lw_entity_has_effect(const LwEntity *self, int attack_id) {
 
 /* Java: public void addEffect(Effect effect) { effects.add(effect); } */
 void lw_entity_add_effect(LwEntity *self, struct LwEffect *effect) {
-    lw_effect_arr_add(self->effects, &self->n_effects, LW_ENTITY_MAX_EFFECTS, effect);
+    if (!lw_effect_arr_add(self->effects, &self->n_effects, LW_ENTITY_MAX_EFFECTS, effect))
+        lw_entity_capacity_error(self, "too many effects on an entity");
 }
 
 /* Java: public void removeEffect(Effect effect) {
@@ -1535,8 +1554,9 @@ void lw_entity_remove_effect(LwEntity *self, struct LwEffect *effect) {
 
 /* Java: public void addLaunchedEffect(Effect effect) { launchedEffects.add(effect); } */
 void lw_entity_add_launched_effect(LwEntity *self, struct LwEffect *effect) {
-    lw_effect_arr_add(self->launched_effects, &self->n_launched_effects,
-                      LW_ENTITY_MAX_LAUNCHED_EFFECTS, effect);
+    if (!lw_effect_arr_add(self->launched_effects, &self->n_launched_effects,
+                           LW_ENTITY_MAX_LAUNCHED_EFFECTS, effect))
+        lw_entity_capacity_error(self, "too many effects launched by an entity");
 }
 
 /* Java: public void removeLaunchedEffect(Effect effect) { launchedEffects.remove(effect); } */

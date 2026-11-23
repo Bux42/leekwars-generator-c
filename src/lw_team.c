@@ -28,22 +28,23 @@ static int lw_team_iie_find(const LwIntIntEntry *arr, int n, int key) {
     return -1;
 }
 
-static void lw_team_iie_put(LwIntIntEntry *arr, int *pn, int cap, int key, int value) {
+static int lw_team_iie_put(LwIntIntEntry *arr, int *pn, int cap, int key, int value) {
     int idx = lw_team_iie_find(arr, *pn, key);
     if (idx >= 0) {
         arr[idx].value = value;
-        return;
+        return 1;
     }
     int pos = *pn;
     for (int i = 0; i < *pn; i++) {
         if (key < arr[i].key) { pos = i; break; }
     }
-    if (*pn >= cap) return;
+    if (*pn >= cap) return 0;
     for (int i = *pn; i > pos; i--) arr[i] = arr[i - 1];
     arr[pos].key = key;
     arr[pos].value = value;
     arr[pos].present = 1;
     (*pn)++;
+    return 1;
 }
 
 static void lw_team_iie_remove(LwIntIntEntry *arr, int *pn, int key) {
@@ -114,9 +115,10 @@ LwEntity* lw_team_get_entity_at(const LwTeam *self, int index) {
 }
 
 /* Java: public void addEntity(Entity entity) { entities.add(entity); } */
-void lw_team_add_entity(LwTeam *self, LwEntity *entity) {
-    if (self->n_entities >= LW_TEAM_MAX_ENTITIES) return;
+int lw_team_add_entity(LwTeam *self, LwEntity *entity) {
+    if (self->n_entities >= LW_TEAM_MAX_ENTITIES) return 0;
     self->entities[self->n_entities++] = entity;
+    return 1;
 }
 
 /* Java: public void removeEntity(Entity invoc) { entities.remove(invoc); } */
@@ -184,10 +186,10 @@ int lw_team_size(const LwTeam *self) { return self->n_entities; }
  *     cooldowns.put(chip.getId(), cooldown == -1 ? State.MAX_TURNS + 2 : cooldown);
  * }
  */
-void lw_team_add_cooldown(LwTeam *self, struct LwChip *chip, int cooldown) {
+int lw_team_add_cooldown(LwTeam *self, struct LwChip *chip, int cooldown) {
     int v = (cooldown == -1) ? LW_TEAM_MAX_TURNS_PLUS_2 : cooldown;
-    lw_team_iie_put(self->cooldowns, &self->n_cooldowns,
-                    LW_TEAM_MAX_COOLDOWNS, lw_chip_get_id(chip), v);
+    return lw_team_iie_put(self->cooldowns, &self->n_cooldowns,
+                           LW_TEAM_MAX_COOLDOWNS, lw_chip_get_id(chip), v);
 }
 
 /* Java: public boolean hasCooldown(int chipID) { return cooldowns.containsKey(chipID); } */

@@ -104,7 +104,7 @@ struct LwTeam* lw_team_create     (void);
 LwTeam* lw_team_clone             (const LwTeam *src);
 void   lw_team_set_id             (struct LwTeam *t, int id);
 int    lw_team_get_id             (const struct LwTeam *t);
-void   lw_team_add_entity         (struct LwTeam *t, struct LwEntity *e);
+int    lw_team_add_entity         (struct LwTeam *t, struct LwEntity *e);
 void   lw_team_remove_entity      (struct LwTeam *t, struct LwEntity *e);
 struct LwEntity** lw_team_get_entities(struct LwTeam *t, int *out_n);
 int    lw_team_size               (const struct LwTeam *t);
@@ -115,7 +115,7 @@ int    lw_team_get_summon_count   (const struct LwTeam *t);
 int    lw_team_get_life           (const struct LwTeam *t);
 double lw_team_get_life_ratio     (const struct LwTeam *t);
 void   lw_team_apply_cool_down    (struct LwTeam *t);
-void   lw_team_add_cooldown       (struct LwTeam *t, struct LwChip *chip, int cooldown);
+int    lw_team_add_cooldown       (struct LwTeam *t, struct LwChip *chip, int cooldown);
 int    lw_team_has_cooldown       (const struct LwTeam *t, int chip_id);
 int    lw_team_get_cooldown       (const struct LwTeam *t, int chip_id);
 void   lw_team_add_flag           (struct LwTeam *t, int flag);
@@ -745,17 +745,23 @@ void lw_state_add_entity(LwState *self, int t, struct LwEntity *entity) {
         team = self->n_teams;
     }
     while (self->n_teams < team + 1) {
-        if (self->n_teams >= LW_STATE_MAX_TEAMS) return;
+        if (self->n_teams >= LW_STATE_MAX_TEAMS) {
+            lw_state_set_fatal_error(self, LW_STATE_ERROR_CAPACITY, "too many teams");
+            return;
+        }
         self->teams[self->n_teams] = lw_team_create();
         self->owned_teams[self->n_teams] = 1;
         self->n_teams++;
     }
     lw_entity_set_team(entity, team);
-    lw_team_add_entity(self->teams[team], entity);
+    if (!lw_team_add_entity(self->teams[team], entity))
+        lw_state_set_fatal_error(self, LW_STATE_ERROR_CAPACITY, "too many entities in a team");
     lw_entity_set_state(entity, self, lw_state_get_next_entity_id(self));
 
     if (self->n_entities < LW_STATE_MAX_ENTITIES) {
         self->m_entities[self->n_entities++] = entity;
+    } else {
+        lw_state_set_fatal_error(self, LW_STATE_ERROR_CAPACITY, "too many entities");
     }
 }
 
@@ -1136,7 +1142,8 @@ void lw_state_add_cooldown_default(LwState *self, struct LwEntity *entity, struc
 void lw_state_add_cooldown(LwState *self, struct LwEntity *entity, struct LwChip *chip, int cooldown) {
     if (chip == NULL) return;
     if (lw_chip_is_team_cooldown(chip)) {
-        lw_team_add_cooldown(self->teams[lw_entity_get_team(entity)], chip, cooldown);
+        if (!lw_team_add_cooldown(self->teams[lw_entity_get_team(entity)], chip, cooldown))
+            lw_state_set_fatal_error(self, LW_STATE_ERROR_CAPACITY, "too many team cooldowns");
     } else {
         lw_entity_add_cooldown(entity, chip, cooldown);
     }
@@ -1246,7 +1253,8 @@ void lw_state_init_fight(LwState *self) {
     for (int i = 0; i < n_order; i++) {
         struct LwEntity *e = order_buf[i];
         if (lw_entity_is_alive(e)) {
-            lw_order_add_entity(&self->order, e);
+            if (!lw_order_add_entity(&self->order, e))
+                lw_state_set_fatal_error(self, LW_STATE_ERROR_CAPACITY, "turn order is full");
         }
         if (self->n_initial_order < LW_STATE_MAX_ENTITIES) {
             self->initial_order[self->n_initial_order++] = e;
@@ -2273,7 +2281,8 @@ void lw_state_resurrect(LwState *self, struct LwEntity *owner, struct LwEntity *
     }
     int index = after_summoner > 0 ? after_summoner :
         (next ? lw_order_get_entity_turn_order(&self->order, next) - 1 : self->order.n_leeks);
-    lw_order_add_entity_at(&self->order, index, entity);
+    if (!lw_order_add_entity_at(&self->order, index, entity))
+        lw_state_set_fatal_error(self, LW_STATE_ERROR_CAPACITY, "turn order is full");
     lw_entity_resurrect_proc(entity, owner, critical ? LW_CRITICAL_FACTOR_F : 1.0, fullLife);
 
     // On met la cellule

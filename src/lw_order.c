@@ -52,9 +52,10 @@ void lw_order_copy(LwOrder *self, const LwOrder *order, struct LwState *state) {
 
 
 /* Java: public void addEntity(Entity leek) { leeks.add(leek); } */
-void lw_order_add_entity(LwOrder *self, struct LwEntity *leek) {
-    if (self->n_leeks >= LW_ORDER_MAX_ENTITIES) return;
+int lw_order_add_entity(LwOrder *self, struct LwEntity *leek) {
+    if (self->n_leeks >= LW_ORDER_MAX_ENTITIES) return 0;
     self->leeks[self->n_leeks++] = leek;
+    return 1;
 }
 
 
@@ -78,16 +79,17 @@ static int lw_order_index_of(const LwOrder *self, struct LwEntity *e) {
  * NOTE: Java's ArrayList.add(int, T) does NOT shift `position` -- it's
  * a plain insertion. Order tracks position outside.
  */
-void lw_order_add_summon(LwOrder *self, struct LwEntity *owner, struct LwEntity *invoc) {
+int lw_order_add_summon(LwOrder *self, struct LwEntity *owner, struct LwEntity *invoc) {
     int idx = lw_order_index_of(self, owner);
-    if (idx == -1) return;
+    if (idx == -1) return 1;
     int insert = idx + 1;
-    if (self->n_leeks >= LW_ORDER_MAX_ENTITIES) return;
+    if (self->n_leeks >= LW_ORDER_MAX_ENTITIES) return 0;
     for (int i = self->n_leeks; i > insert; i--) {
         self->leeks[i] = self->leeks[i - 1];
     }
     self->leeks[insert] = invoc;
     self->n_leeks++;
+    return 1;
 }
 
 
@@ -99,8 +101,8 @@ void lw_order_add_summon(LwOrder *self, struct LwEntity *owner, struct LwEntity 
  *       }
  *   }
  */
-void lw_order_add_entity_at(LwOrder *self, int index, struct LwEntity *invoc) {
-    if (self->n_leeks >= LW_ORDER_MAX_ENTITIES) return;
+int lw_order_add_entity_at(LwOrder *self, int index, struct LwEntity *invoc) {
+    if (self->n_leeks >= LW_ORDER_MAX_ENTITIES) return 0;
     if (index < 0) index = 0;
     if (index > self->n_leeks) index = self->n_leeks;
     for (int i = self->n_leeks; i > index; i--) {
@@ -111,6 +113,7 @@ void lw_order_add_entity_at(LwOrder *self, int index, struct LwEntity *invoc) {
     if (index <= self->position) {
         self->position++;
     }
+    return 1;
 }
 
 

@@ -140,18 +140,18 @@ full action-stream or current-Java parity.
   awakening preserve the active plant, and require explicit completion of
   the cloned awakening before later awakenings can run.
 
-## Deferred robustness investigation
+## Fixed capacities
 
-Per user decision, investigate these in a red-team exercise after the
-mechanics update rather than redesigning them now:
+Java's collections have no limit, the C port's do. Filling one of these sets
+the state's fatal error (`LW_STATE_ERROR_CAPACITY`) and aborts the fight rather
+than dropping the entry: active or launched effects (64 per entity), cooldowns
+(32 per entity and per team), items used in a turn (32 per entity), entities
+(64 per fight and per team, dead summons included), turn order (64) and teams
+(16). Chips (32), weapons (18) and passive effects (16) also do, once the entity
+belongs to a fight; before that, extra entries are still dropped silently.
 
-- An entity silently drops active or launched effects beyond 64 entries.
-- The action stream silently drops entries beyond 2,048; complete logs are
-  not currently a priority.
-- Per user decision, entity and team cooldowns silently drop entries beyond
-  32; investigate this limit during the red-team exercise as well.
-- Per user decision, per-turn item-use tracking beyond 32 distinct items is
-  also deferred; dropped entries can bypass per-item use limits.
+The action stream still silently drops entries beyond 2,048: it does not affect
+the fight, and complete logs are not currently a priority.
 
-These are known limits on correctness and must not be presented as full
-parity. Their reachability in official fights remains to be established.
+Reachability of these limits in official fights remains to be established.
+They must not be presented as full parity.

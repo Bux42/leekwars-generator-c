@@ -54,6 +54,9 @@ struct LwOwnedEffect;
 #define LW_STATE_ERROR_PLANT_ALLOCATION  (-1005)
 #define LW_STATE_ERROR_PLANT_DISPATCH    (-1006)
 #define LW_STATE_ERROR_SUMMON_DISPATCH   (-1007)
+/* A fixed-size table is full. Java has no such limits: the fight cannot go on
+ * without diverging. */
+#define LW_STATE_ERROR_CAPACITY          (-1008)
 
 typedef int (*lw_plant_awakening_t)(struct LwState *state,
                                     struct LwEntity *plant,
