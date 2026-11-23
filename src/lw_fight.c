@@ -157,6 +157,7 @@ void lw_fight_init_with_listener(LwFight *self, struct LwGenerator *generator,
     self->ai_dispatch_userdata = NULL;
     self->plant_ai_dispatch = NULL;
     self->plant_ai_dispatch_userdata = NULL;
+    self->step_current = NULL;
 }
 
 void lw_fight_set_ai_dispatch(LwFight *self, lw_fight_ai_dispatch_t fn, void *userdata) {
@@ -313,7 +314,32 @@ static int lw_fight_can_start_fight(const LwFight *self) {
  * the caller (Generator.runScenario) translates the status into
  * outcome.exception. */
 int lw_fight_start_fight(LwFight *self, int draw_check_life) {
+    int rc = lw_fight_step_start(self);
+    if (rc != 0) return rc;
+
+    /* On lance les tours
+     * while (state.getOrder().getTurn() <= max_turns
+     *        && state.getState() == State.STATE_RUNNING) {
+     *     startTurn();
+     *     if (state.getOrder().current() == null) {
+     *         finishFight();
+     *         break;
+     *     }
+     * }
+     */
+    while (!lw_fight_step_is_over(self)) {
+        rc = lw_fight_start_turn(self);
+        if (rc != 0) return rc;
+    }
+
+    return lw_fight_step_finish(self, draw_check_life);
+}
+
+
+/* First part of startFight: initialise the fight, up to the turn loop. */
+int lw_fight_step_start(LwFight *self) {
     if (self == NULL || self->state == NULL) return -1;
+    self->step_current = NULL;
     int rc = lw_fight_init_fight(self);
     if (rc != 0) return rc;
 
@@ -363,27 +389,20 @@ int lw_fight_start_fight(LwFight *self, int draw_check_life) {
     /* Log.i(TAG, "Turn 1"); */
     lw_log_i("Fight", "Turn 1");
 
-    /* On lance les tours
-     * while (state.getOrder().getTurn() <= max_turns
-     *        && state.getState() == State.STATE_RUNNING) {
-     *     startTurn();
-     *     if (state.getOrder().current() == null) {
-     *         finishFight();
-     *         break;
-     *     }
-     * }
-     */
-    while (lw_order_get_turn(lw_state_get_order(self->state)) <= self->max_turns
-        && lw_state_get_state(self->state) == LW_FIGHT_STATE_RUNNING) {
+    return 0;
+}
 
-        rc = lw_fight_start_turn(self);
-        if (rc != 0) return rc;
 
-        if (lw_order_current(lw_state_get_order(self->state)) == NULL) {
-            lw_fight_finish_fight(self);
-            break;
-        }
-    }
+/* Turn loop condition of startFight. */
+int lw_fight_step_is_over(const LwFight *self) {
+    return lw_order_get_turn(lw_state_get_order(self->state)) > self->max_turns
+        || lw_state_get_state(self->state) != LW_FIGHT_STATE_RUNNING;
+}
+
+
+/* Last part of startFight: everything after the turn loop. */
+int lw_fight_step_finish(LwFight *self, int draw_check_life) {
+    if (self == NULL || self->state == NULL || self->step_current != NULL) return -1;
 
     /* Si match nul
      * if (state.getOrder().getTurn() == Fight.MAX_TURNS + 1) {
@@ -436,11 +455,8 @@ int lw_fight_start_fight(LwFight *self, int draw_check_life) {
     }
 
     /* state.getActions().addOpsAndTimes(state.statistics); */
-    rc = lw_actions_add_ops_and_times(lw_state_get_actions(self->state),
-                                      lw_state_get_statistics(self->state));
-    if (rc != 0) return rc;
-
-    return 0;
+    return lw_actions_add_ops_and_times(lw_state_get_actions(self->state),
+                                        lw_state_get_statistics(self->state));
 }
 
 
@@ -618,9 +634,13 @@ void lw_fight_finish_fight(LwFight *self) {
  *   state.endTurn();
  * }
  */
-int lw_fight_start_turn(LwFight *self) {
+/* Opens the turn of the current entity. *out_current is that entity, or
+ * NULL if the order is empty. An entity killed by its own start-of-turn
+ * effects plays no turn, but its turn still has to be closed. */
+static int open_turn(LwFight *self, struct LwEntity **out_current) {
     struct LwOrder *order = lw_state_get_order(self->state);
     struct LwEntity *current = lw_order_current(order);
+    *out_current = current;
     if (current == NULL) {
         return 0;
     }
@@ -638,58 +658,15 @@ int lw_fight_start_turn(LwFight *self) {
     lw_state_clear_plant_triggers(self->state, current);
     /* current.startTurn(); */
     lw_entity_start_turn(current);
-    if (lw_state_get_fatal_error(self->state)) return lw_state_get_fatal_error(self->state);
+    return lw_state_get_fatal_error(self->state);
+}
 
-    if (!lw_entity_is_dead(current)) {
-        void *ai = current->awakening_zone > 0 ? NULL : lw_entity_get_ai(current);
-        if (current->awakening_zone <= 0 && (ai != NULL || current->has_summon_ai)) {
-            /* In Java: ai.isValid() checks the leekscript compiler result.
-             * In C the binding installs ai_dispatch only for valid AIs;
-             * absence of ai_dispatch implies "no AI" path below. We treat
-             * "ai != NULL but ai_dispatch == NULL" as an invalid AI. */
-            if (self->ai_dispatch != NULL) {
-                /* ai.setEntity(current);  -- handled by the dispatcher */
-                int64_t start_time = lw_now_nanos();
-                int operations = self->ai_dispatch(self, current,
-                                                   lw_entity_get_ai_file(current),
-                                                   lw_order_get_turn(order),
-                                                   self->ai_dispatch_userdata);
-                int64_t end_time = lw_now_nanos();
 
-                int fatal_error = lw_state_get_fatal_error(self->state);
-                if (fatal_error) return fatal_error;
-                if (operations < 0) {
-                    /* AI runtime error: same handling as ai.isValid() == false. */
-                    if (lw_fight_get_turn(self) == 1) {
-                        /* leekLog.addSystemLog(SERROR, INVALID_AI, ["Invalid AI"]) */
-                        /* (no-op stub: binding handles per-farmer logs) */
-                        (void)lw_entity_get_logs(current);
-                    }
-                    lw_actions_log_ai_error(lw_state_get_actions(self->state), current);
-                    lw_stats_error(lw_state_get_statistics(self->state), current);
-                } else {
-                    /* state.statistics.addTimes(current, endTime - startTime, ai.operations()); */
-                    lw_stats_add_times(lw_state_get_statistics(self->state),
-                                       current, end_time - start_time, operations);
-                    /* executionTime += endTime - startTime; */
-                    self->execution_time += end_time - start_time;
-                    /* current.addOperations(ai.operations()); */
-                    lw_entity_add_operations(current, operations);
-                }
-            } else {
-                /* Add 'crash' action if AI is invalid */
-                if (lw_fight_get_turn(self) == 1) {
-                    /* leekLog.addSystemLog(SERROR, INVALID_AI, ["Invalid AI"]) -- stub */
-                    (void)lw_entity_get_logs(current);
-                }
-                lw_actions_log_ai_error(lw_state_get_actions(self->state), current);
-                lw_stats_error(lw_state_get_statistics(self->state), current);
-            }
-        } else {
-            /* Pas d'IA équipée : juste un warning */
-            /* leekLog.addSystemLog(SWARNING, NO_AI_EQUIPPED) -- stub */
-            (void)lw_entity_get_logs(current);
-        }
+/* Closes a turn opened by open_turn. `played` is false for an entity that
+ * died while its turn was being opened. The caller keeps `current`: an
+ * entity dying during its own turn has already left the order. */
+static int close_turn(LwFight *self, struct LwEntity *current, int played) {
+    if (played) {
         /* current.endTurn(); */
         lw_entity_end_turn(current);
         if (lw_state_get_fatal_error(self->state)) return lw_state_get_fatal_error(self->state);
@@ -698,8 +675,148 @@ int lw_fight_start_turn(LwFight *self) {
     }
     /* state.endTurn(); */
     lw_state_end_turn(self->state);
+    if (lw_state_get_fatal_error(self->state)) return lw_state_get_fatal_error(self->state);
 
-    return lw_state_get_fatal_error(self->state);
+    /* startFight: if (state.getOrder().current() == null) finishFight(); */
+    if (lw_order_current(lw_state_get_order(self->state)) == NULL) {
+        lw_fight_finish_fight(self);
+    }
+    return 0;
+}
+
+
+/* Awakening plants never play an ordinary turn. */
+static int has_turn_ai(const struct LwEntity *entity) {
+    return entity->awakening_zone <= 0
+        && (lw_entity_get_ai(entity) != NULL || entity->has_summon_ai);
+}
+
+
+int lw_fight_start_turn(LwFight *self) {
+    struct LwOrder *order = lw_state_get_order(self->state);
+    struct LwEntity *current;
+    int rc = open_turn(self, &current);
+    if (rc != 0) return rc;
+    if (current == NULL) {
+        lw_fight_finish_fight(self);
+        return 0;
+    }
+    if (lw_entity_is_dead(current)) return close_turn(self, current, 0);
+
+    if (has_turn_ai(current)) {
+        /* In Java: ai.isValid() checks the leekscript compiler result.
+         * In C the binding installs ai_dispatch only for valid AIs;
+         * absence of ai_dispatch implies "no AI" path below. We treat
+         * "ai != NULL but ai_dispatch == NULL" as an invalid AI. */
+        if (self->ai_dispatch != NULL) {
+            /* ai.setEntity(current);  -- handled by the dispatcher */
+            int64_t start_time = lw_now_nanos();
+            int operations = self->ai_dispatch(self, current,
+                                               lw_entity_get_ai_file(current),
+                                               lw_order_get_turn(order),
+                                               self->ai_dispatch_userdata);
+            int64_t end_time = lw_now_nanos();
+
+            int fatal_error = lw_state_get_fatal_error(self->state);
+            if (fatal_error) return fatal_error;
+            if (operations < 0) {
+                /* AI runtime error: same handling as ai.isValid() == false. */
+                if (lw_fight_get_turn(self) == 1) {
+                    /* leekLog.addSystemLog(SERROR, INVALID_AI, ["Invalid AI"]) */
+                    /* (no-op stub: binding handles per-farmer logs) */
+                    (void)lw_entity_get_logs(current);
+                }
+                lw_actions_log_ai_error(lw_state_get_actions(self->state), current);
+                lw_stats_error(lw_state_get_statistics(self->state), current);
+            } else {
+                /* state.statistics.addTimes(current, endTime - startTime, ai.operations()); */
+                lw_stats_add_times(lw_state_get_statistics(self->state),
+                                   current, end_time - start_time, operations);
+                /* executionTime += endTime - startTime; */
+                self->execution_time += end_time - start_time;
+                /* current.addOperations(ai.operations()); */
+                lw_entity_add_operations(current, operations);
+            }
+        } else {
+            /* Add 'crash' action if AI is invalid */
+            if (lw_fight_get_turn(self) == 1) {
+                /* leekLog.addSystemLog(SERROR, INVALID_AI, ["Invalid AI"]) -- stub */
+                (void)lw_entity_get_logs(current);
+            }
+            lw_actions_log_ai_error(lw_state_get_actions(self->state), current);
+            lw_stats_error(lw_state_get_statistics(self->state), current);
+        }
+    } else {
+        /* Pas d'IA équipée : juste un warning */
+        /* leekLog.addSystemLog(SWARNING, NO_AI_EQUIPPED) -- stub */
+        (void)lw_entity_get_logs(current);
+    }
+
+    return close_turn(self, current, 1);
+}
+
+
+/* ----------------------------------------------------------------- */
+/* Step-by-step execution                                              */
+/* ----------------------------------------------------------------- */
+
+int lw_fight_step_begin_turn(LwFight *self, struct LwEntity **actor) {
+    struct LwEntity *current;
+    int rc;
+    if (actor != NULL) *actor = NULL;
+    if (self == NULL || self->state == NULL || actor == NULL) return -1;
+    if (self->step_current != NULL || lw_fight_step_is_over(self)) return -1;
+    rc = open_turn(self, &current);
+    if (rc != 0) return rc;
+    if (current == NULL) {
+        lw_fight_finish_fight(self);
+        return 0;
+    }
+    if (lw_entity_is_dead(current)) return close_turn(self, current, 0);
+    if (!has_turn_ai(current)) return close_turn(self, current, 1);
+    self->step_current = current;
+    *actor = current;
+    return 0;
+}
+
+
+int lw_fight_step_end_turn(LwFight *self) {
+    struct LwEntity *current;
+    if (self == NULL || self->state == NULL || self->step_current == NULL) return -1;
+    current = self->step_current;
+    self->step_current = NULL;
+    return close_turn(self, current, 1);
+}
+
+
+struct LwEntity* lw_fight_step_current(const LwFight *self) {
+    return self ? self->step_current : NULL;
+}
+
+
+int lw_fight_step_clone(LwFight *self, struct LwState *state, const LwFight *src) {
+    if (self == NULL || state == NULL || src == NULL || src->state == NULL ||
+        self == src || state == src->state || src->state->awakening_plant != NULL) return 0;
+    if (!lw_state_clone(state, src->state)) return 0;
+    *self = *src;
+    self->state = NULL;
+    self->step_current = NULL;
+    lw_fight_set_state(self, state);
+    for (int i = 0; i < state->n_entities; i++) {
+        struct LwEntity *from = src->state->m_entities[i];
+        struct LwEntity *to = state->m_entities[i];
+        if (from == NULL || to == NULL) continue;
+        /* Opaque, caller-owned handles: shared with the source. */
+        lw_entity_set_ai(to, lw_entity_get_ai(from));
+        to->ai_file = from->ai_file;
+        lw_entity_set_fight(to, self);
+        if (from == src->step_current) self->step_current = to;
+    }
+    if (src->step_current != NULL && self->step_current == NULL) {
+        lw_state_dispose(state);
+        return 0;
+    }
+    return 1;
 }
 
 

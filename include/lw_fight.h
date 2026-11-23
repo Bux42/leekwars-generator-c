@@ -121,6 +121,9 @@ typedef struct LwFight {
     void                  *ai_dispatch_userdata;
     lw_fight_plant_ai_dispatch_t plant_ai_dispatch;
     void                  *plant_ai_dispatch_userdata;
+
+    /* Entity whose turn is open in step-by-step mode, else NULL. */
+    struct LwEntity       *step_current;
 } LwFight;
 
 
@@ -182,6 +185,46 @@ void lw_fight_finish_fight(LwFight *self);
 
 /* Java: public void computeWinner(boolean drawCheckLife) */
 void lw_fight_compute_winner(LwFight *self, int draw_check_life);
+
+
+/* ---- Step-by-step execution ------------------------------------------
+ *
+ * Same fight as lw_fight_start_fight, without an AI callback: the caller
+ * owns the loop, so the fight can stay suspended between two actions.
+ *
+ *   lw_fight_step_start(fight);
+ *   while (!lw_fight_step_is_over(fight)) {
+ *       lw_fight_step_begin_turn(fight, &actor);
+ *       if (actor == NULL) continue;      // nobody to control this turn
+ *       ... use the engine actions on actor while it is alive ...
+ *       lw_fight_step_end_turn(fight);
+ *   }
+ *   lw_fight_step_finish(fight, draw_check_life);
+ *
+ * lw_fight_start_fight is built from the same pieces. Functions return 0 on
+ * success, non-zero on a fatal error or a call made in the wrong phase (-1).
+ * Awakening plants act inside other entities' actions, through the plant AI
+ * callback, in both modes. */
+int  lw_fight_step_start(LwFight *self);
+int  lw_fight_step_is_over(const LwFight *self);
+
+/* Opens the next turn. *actor is the entity to control. It is NULL, and the
+ * turn is already closed, when the entity died at the start of its turn or
+ * has no AI: a plant, or a summon created without an AI. */
+int  lw_fight_step_begin_turn(LwFight *self, struct LwEntity **actor);
+
+/* Closes the open turn, including when its entity died during the turn. */
+int  lw_fight_step_end_turn(LwFight *self);
+int  lw_fight_step_finish(LwFight *self, int draw_check_life);
+
+/* Entity whose turn is open, or NULL. */
+struct LwEntity* lw_fight_step_current(const LwFight *self);
+
+/* Clones a suspended fight and its state. `self` and `state` are caller-owned
+ * and uninitialised; release `state` with lw_state_dispose. AI handles,
+ * callbacks and the statistics manager are shared with the source. Returns 1
+ * on success, 0 on failure. Must not be called from a plant awakening. */
+int  lw_fight_step_clone(LwFight *self, struct LwState *state, const LwFight *src);
 
 
 /* ---- Combat dispatch ------------------------------------------------- */

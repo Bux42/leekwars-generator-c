@@ -274,14 +274,14 @@ void lw_generator_exception_in_fight(LwGenerator *self,
  *   }
  * }
  */
-int lw_generator_run_scenario(LwGenerator *self,
-                              LwScenario *scenario,
-                              struct LwFightListener *listener,
-                              struct LwRegisterManager *register_manager,
-                              struct LwStatisticsManager *statistics_manager,
-                              struct LwState *state,
-                              LwFight *fight,
-                              LwOutcome *outcome) {
+int lw_generator_prepare_scenario(LwGenerator *self,
+                                  LwScenario *scenario,
+                                  struct LwFightListener *listener,
+                                  struct LwRegisterManager *register_manager,
+                                  struct LwStatisticsManager *statistics_manager,
+                                  struct LwState *state,
+                                  LwFight *fight,
+                                  LwOutcome *outcome) {
     if (self == NULL || scenario == NULL || state == NULL
         || fight == NULL || outcome == NULL) {
         return -1;
@@ -398,6 +398,23 @@ int lw_generator_run_scenario(LwGenerator *self,
             lw_entity_set_ai(entity, (void*)(uintptr_t)1);
         }
     }
+
+    return 0;
+}
+
+
+int lw_generator_run_scenario(LwGenerator *self,
+                              LwScenario *scenario,
+                              struct LwFightListener *listener,
+                              struct LwRegisterManager *register_manager,
+                              struct LwStatisticsManager *statistics_manager,
+                              struct LwState *state,
+                              LwFight *fight,
+                              LwOutcome *outcome) {
+    int prepared = lw_generator_prepare_scenario(self, scenario, listener,
+                                                 register_manager, statistics_manager,
+                                                 state, fight, outcome);
+    if (prepared != 0) return prepared;
 
     /* try {
      *   fight.startFight(scenario.drawCheckLife);

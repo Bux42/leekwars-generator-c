@@ -116,5 +116,17 @@ int  lw_generator_run_scenario(LwGenerator *self,
                                LwFight *fight,                /* caller-owned, zeroed */
                                LwOutcome *outcome);            /* caller-owned, zeroed */
 
+/* First half of lw_generator_run_scenario: builds the fight and its entities
+ * without starting it. Continue with lw_fight_start_fight or, step by step,
+ * lw_fight_step_start. Same arguments and storage rules. */
+int  lw_generator_prepare_scenario(LwGenerator *self,
+                                   LwScenario *scenario,
+                                   struct LwFightListener *listener,
+                                   struct LwRegisterManager *register_manager,
+                                   struct LwStatisticsManager *statistics_manager,
+                                   struct LwState *state,
+                                   LwFight *fight,
+                                   LwOutcome *outcome);
+
 
 #endif /* LW_GENERATOR_H */
