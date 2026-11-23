@@ -75,7 +75,8 @@ int       lw_team_get_entities_count(const LwTeam *self);
 LwEntity* lw_team_get_entity_at      (const LwTeam *self, int index);
 
 /* Java: public void addEntity(Entity entity) */
-void lw_team_add_entity(LwTeam *self, LwEntity *entity);
+/* Returns 0 if the team is full, else 1. */
+int lw_team_add_entity(LwTeam *self, LwEntity *entity);
 
 /* Java: public void removeEntity(Entity invoc) */
 void lw_team_remove_entity(LwTeam *self, LwEntity *invoc);
@@ -88,7 +89,8 @@ int  lw_team_is_alive(const LwTeam *self);
 int  lw_team_size    (const LwTeam *self);
 
 /* Java: public void addCooldown(Chip chip, int cooldown) */
-void lw_team_add_cooldown(LwTeam *self, struct LwChip *chip, int cooldown);
+/* Returns 0 if the cooldown table is full, else 1. */
+int lw_team_add_cooldown(LwTeam *self, struct LwChip *chip, int cooldown);
 
 /* Java: public boolean hasCooldown(int chipID) */
 int  lw_team_has_cooldown(const LwTeam *self, int chip_id);

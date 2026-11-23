@@ -40,14 +40,15 @@ void lw_order_init(LwOrder *self);
 /* public Order(Order order, State state) */
 void lw_order_copy(LwOrder *self, const LwOrder *order, struct LwState *state);
 
+/* The three insertions return 0 if the order is full, else 1. */
 /* public void addEntity(Entity leek) */
-void lw_order_add_entity(LwOrder *self, struct LwEntity *leek);
+int lw_order_add_entity(LwOrder *self, struct LwEntity *leek);
 
 /* public void addSummon(Entity owner, Entity invoc) */
-void lw_order_add_summon(LwOrder *self, struct LwEntity *owner, struct LwEntity *invoc);
+int lw_order_add_summon(LwOrder *self, struct LwEntity *owner, struct LwEntity *invoc);
 
 /* public void addEntity(int index, Entity invoc) */
-void lw_order_add_entity_at(LwOrder *self, int index, struct LwEntity *invoc);
+int lw_order_add_entity_at(LwOrder *self, int index, struct LwEntity *invoc);
 
 /* public void removeEntity(Entity leek) */
 void lw_order_remove_entity(LwOrder *self, struct LwEntity *leek);
