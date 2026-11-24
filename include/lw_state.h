@@ -43,7 +43,7 @@ struct LwOwnedEffect;
  * type (battle royale up to 8v0, plus 8 summons each).
  */
 #define LW_STATE_MAX_TEAMS       16
-#define LW_STATE_MAX_ENTITIES    64
+#define LW_STATE_MAX_ENTITIES    128
 #define LW_STATE_MAX_COOLDOWNS   256
 
 /* Fatal engine errors are distinct from attack USE_* result codes. */

@@ -146,7 +146,7 @@ Java's collections have no limit, the C port's do. Filling one of these sets
 the state's fatal error (`LW_STATE_ERROR_CAPACITY`) and aborts the fight rather
 than dropping the entry: active or launched effects (64 per entity), cooldowns
 (32 per entity and per team), items used in a turn (32 per entity), entities
-(64 per fight and per team, dead summons included), turn order (64) and teams
+(128 per fight and per team, dead summons included), turn order (64) and teams
 (16). Chips (32), weapons (18) and passive effects (16) also do, once the entity
 belongs to a fight; before that, extra entries are still dropped silently.
 

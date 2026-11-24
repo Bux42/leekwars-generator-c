@@ -27,7 +27,7 @@ struct LwChip;
 
 /* Capacities -- Java has no fixed cap. Sized to comfortably fit the
  * largest fights (battle royale up to 8 farmers x 8 leeks x ~3 summons). */
-#define LW_TEAM_MAX_ENTITIES   64
+#define LW_TEAM_MAX_ENTITIES   128
 #define LW_TEAM_MAX_COOLDOWNS  32
 #define LW_TEAM_MAX_FLAGS      16
 

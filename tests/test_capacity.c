@@ -112,6 +112,25 @@ static int entities(void) {
     return 0;
 }
 
+/* Listing the summons of an entity, dead ones included, up to the limit. */
+static int summons(void) {
+    Fixture *f = make_fixture();
+    LwEntity *list[LW_STATE_MAX_ENTITIES];
+    for (int i = 1; i < LW_STATE_MAX_ENTITIES; i++) {
+        f->entities[i].type = LW_ENTITY_TYPE_BULB;
+        f->entities[i].m_owner = &f->entities[0];
+        if (i > 8) f->entities[i].life = 0;
+        lw_state_add_entity(&f->state, 0, &f->entities[i]);
+    }
+    CHECK(!lw_state_get_fatal_error(&f->state));
+    CHECK(lw_entity_get_summons(&f->entities[0], 1, list, LW_STATE_MAX_ENTITIES) ==
+          LW_STATE_MAX_ENTITIES - 1);
+    CHECK(list[LW_STATE_MAX_ENTITIES - 2] == &f->entities[LW_STATE_MAX_ENTITIES - 1]);
+    CHECK(lw_entity_get_summons(&f->entities[0], 0, list, LW_STATE_MAX_ENTITIES) == 8);
+    free_fixture(f);
+    return 0;
+}
+
 static int teams(void) {
     Fixture *f = make_fixture();
     lw_state_add_entity(&f->state, LW_STATE_MAX_TEAMS - 1, &f->entities[1]);
@@ -165,6 +184,7 @@ int main(void) {
     CHECK(effects(0) == 0);
     CHECK(effects(1) == 0);
     CHECK(entities() == 0);
+    CHECK(summons() == 0);
     CHECK(teams() == 0);
     CHECK(order() == 0);
     CHECK(loadout() == 0);

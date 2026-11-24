@@ -893,8 +893,9 @@ void lw_entity_die(LwEntity *self) {
     lw_entity_update_buff_stats(self);
 
     /* Kill summons */
-    LwEntity *entities[64];
-    int n = lw_state_get_team_entities(self->state, lw_entity_get_team(self), entities, 64);
+    LwEntity *entities[LW_STATE_MAX_ENTITIES];
+    int n = lw_state_get_team_entities(self->state, lw_entity_get_team(self),
+                                       entities, LW_STATE_MAX_ENTITIES);
     for (int i = 0; i < n; i++) {
         LwEntity *e = entities[i];
         LwEntity *sm = lw_entity_get_summoner(e);
@@ -1275,8 +1276,9 @@ void lw_entity_end_turn(LwEntity *self) {
             const LwEffectParameters *original    = &attack->effects[1];
             double jet = lw_rng_get_double(lw_state_get_random(self->state));
 
-            LwEntity *targets[64];
-            int nt = lw_entity_get_entities_around(self, propagate, targets, 64);
+            LwEntity *targets[LW_STATE_MAX_ENTITIES];
+            int nt = lw_entity_get_entities_around(self, propagate, targets,
+                                                  LW_STATE_MAX_ENTITIES);
             for (int t = 0; t < nt; t++) {
                 LwEntity *target = targets[t];
                 int prop_mods = lw_effect_parameters_get_modifiers(propagation);
@@ -1912,9 +1914,10 @@ int lw_entity_get_entities_around(LwEntity *self, int distance,
  */
 int lw_entity_get_summons(LwEntity *self, int get_dead,
                           LwEntity **out_buf, int out_cap) {
-    LwEntity *team_entities[64];
+    LwEntity *team_entities[LW_STATE_MAX_ENTITIES];
     int n = lw_state_get_team_entities_ex(self->state, lw_entity_get_team(self),
-                                              get_dead, team_entities, 64);
+                                              get_dead, team_entities,
+                                              LW_STATE_MAX_ENTITIES);
     int written = 0;
     for (int i = 0; i < n && written < out_cap; i++) {
         LwEntity *e = team_entities[i];
