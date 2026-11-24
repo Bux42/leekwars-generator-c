@@ -280,38 +280,37 @@ static int list_contains(LwCell *const *list, int n_list, const LwCell *c) {
  */
 #define LW_ASTAR_OPEN_CAP   LW_MAP_MAX_CELLS
 
-static int astar_open_n;
-static LwCell *astar_open[LW_ASTAR_OPEN_CAP];
-
-static void astar_open_clear(void) {
-    astar_open_n = 0;
-}
+/* Local to each search, so that fights can run in different threads. */
+typedef struct {
+    int n;
+    LwCell *cells[LW_ASTAR_OPEN_CAP];
+} LwAstarOpen;
 
 /* Insert `c` so that the array stays sorted ascending by `weight`,
  * placing new ties at the front of equal-weight runs (LIFO for ties --
  * see the TreeSet comment above). Linear walk from the back. */
-static void astar_open_add(LwCell *c) {
-    if (astar_open_n >= LW_ASTAR_OPEN_CAP) return;
-    int i = astar_open_n;
+static void astar_open_add(LwAstarOpen *open, LwCell *c) {
+    if (open->n >= LW_ASTAR_OPEN_CAP) return;
+    int i = open->n;
     /* Walk back while existing.weight >= c.weight (so c lands in front
      * of the equal-weight run, matching Java's "new goes left" tie
      * behaviour). */
-    while (i > 0 && astar_open[i - 1]->weight >= c->weight) {
-        astar_open[i] = astar_open[i - 1];
+    while (i > 0 && open->cells[i - 1]->weight >= c->weight) {
+        open->cells[i] = open->cells[i - 1];
         --i;
     }
-    astar_open[i] = c;
-    astar_open_n++;
+    open->cells[i] = c;
+    open->n++;
 }
 
-static LwCell* astar_open_poll_first(void) {
-    if (astar_open_n == 0) return NULL;
-    LwCell *c = astar_open[0];
+static LwCell* astar_open_poll_first(LwAstarOpen *open) {
+    if (open->n == 0) return NULL;
+    LwCell *c = open->cells[0];
     /* Shift left by one. */
-    for (int i = 1; i < astar_open_n; i++) {
-        astar_open[i - 1] = astar_open[i];
+    for (int i = 1; i < open->n; i++) {
+        open->cells[i - 1] = open->cells[i];
     }
-    astar_open_n--;
+    open->n--;
     return c;
 }
 
@@ -412,14 +411,15 @@ int lw_map_get_a_star_path(LwMap *self,
         c->weight = 0.0f;
     }
 
-    astar_open_clear();
+    LwAstarOpen open;
+    open.n = 0;
     from->cost = 0;
     from->weight = 0.0f;
     from->visited = 1;
-    astar_open_add(from);
+    astar_open_add(&open, from);
 
-    while (astar_open_n > 0) {
-        LwCell *u = astar_open_poll_first();
+    while (open.n > 0) {
+        LwCell *u = astar_open_poll_first(&open);
         u->closed = 1;
 
         if (list_contains(targets, n_targets, u)) {
@@ -475,7 +475,7 @@ int lw_map_get_a_star_path(LwMap *self,
                 c->weight = (float) c->cost + (float) lw_map_get_distance(c, targets[0]);
                 c->parent = u;
                 if (!c->visited) {
-                    astar_open_add(c);
+                    astar_open_add(&open, c);
                     c->visited = 1;
                 }
             }
@@ -599,7 +599,7 @@ int lw_map_get_valid_cells_around_obstacle(LwMap *self,
                                            LwCell *cell,
                                            LwCell **out_buf, int out_cap) {
     int n_retour = 0;
-    static LwCell *close[LW_MAP_MAX_CELLS];
+    LwCell *close[LW_MAP_MAX_CELLS];
     int n_close = 0;
     close[n_close++] = cell;
 
@@ -690,7 +690,7 @@ int lw_map_get_path_toward_line(LwMap *self,
                                 LwCell *linecell2,
                                 LwCell **out_buf, int out_cap) {
     /* On crée la liste des cellules à rejoindre */
-    static LwCell *line_cell[LW_MAP_MAX_CELLS];
+    LwCell *line_cell[LW_MAP_MAX_CELLS];
     int n_line_cell = 0;
     /* On trouve la ligne */
     int dx = lw_java_signum_int(linecell2->x - linecell1->x);
@@ -784,12 +784,12 @@ int lw_map_get_path_away(LwMap *self,
     if (start == NULL)
         return -1;
     int curent_distance = lw_map_get_distance2_to_list(start, bad_cells, n_bad_cells);
-    static LwCellDistance potential_targets[LW_MAP_MAX_CELLS];
+    LwCellDistance potential_targets[LW_MAP_MAX_CELLS];
     int n_potential = 0;
     /* MaskAreaCell.generateCircleMask(1, max_distance) -- size is
      *   2 * (1 + max_distance) * (max_distance - 1 + 1) = 2*(1+max)*max
      * for min=1; bounded by LW_MAP_MAX_CELLS for sane max_distance. */
-    static int cells[LW_MAP_MAX_CELLS][2];
+    int cells[LW_MAP_MAX_CELLS][2];
     int n_cells = lw_mask_area_cell_generate_circle_mask(1, max_distance,
                                                           cells, LW_MAP_MAX_CELLS);
     if (n_cells <= 0)
@@ -863,7 +863,7 @@ int lw_map_get_path_away_from_line(LwMap *self,
         return -1;
     }
     /* On crée la liste des cellules à fuir */
-    static LwCell *line_cell[LW_MAP_MAX_CELLS];
+    LwCell *line_cell[LW_MAP_MAX_CELLS];
     int n_line_cell = 0;
     int dx = lw_java_signum_int(linecell2->x - linecell1->x);
     int dy = lw_java_signum_int(linecell2->y - linecell1->y);
@@ -926,9 +926,9 @@ int lw_map_get_path_away_min(LwMap *self,
                              int max_distance,
                              LwCell **out_buf, int out_cap) {
     int curent_distance = lw_map_get_distance2_to_list(start, bad_cells, n_bad_cells);
-    static LwCellDistance potential_targets[LW_MAP_MAX_CELLS];
+    LwCellDistance potential_targets[LW_MAP_MAX_CELLS];
     int n_potential = 0;
-    static int cells[LW_MAP_MAX_CELLS][2];
+    int cells[LW_MAP_MAX_CELLS][2];
     int n_cells = lw_mask_area_cell_generate_circle_mask(1, max_distance,
                                                           cells, LW_MAP_MAX_CELLS);
     if (n_cells <= 0)
@@ -1067,7 +1067,7 @@ int lw_map_get_possible_cast_cells_for_target(LwMap *self,
                 }
             }
         } else {
-            static int mask[LW_MAP_MAX_CELLS][2];
+            int mask[LW_MAP_MAX_CELLS][2];
             int n_mask = lw_mask_area_cell_generate_mask(lw_attack_get_launch_type(attack),
                                                           lw_attack_get_min_range(attack),
                                                           lw_attack_get_max_range(attack),

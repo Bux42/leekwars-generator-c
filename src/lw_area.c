@@ -209,6 +209,19 @@ static const LwAreaMask *lw_mask_for_tag(LwAreaType tag) {
 }
 
 
+/* Build every mask now. They are otherwise built on first use, which is not
+ * safe when several threads run fights. */
+void lw_area_build_masks(void) {
+    static const LwAreaType tags[] = {
+        LW_AREA_TAG_CIRCLE1, LW_AREA_TAG_CIRCLE2, LW_AREA_TAG_CIRCLE3,
+        LW_AREA_TAG_PLUS_2, LW_AREA_TAG_PLUS_3,
+        LW_AREA_TAG_X_1, LW_AREA_TAG_X_2, LW_AREA_TAG_X_3,
+        LW_AREA_TAG_SQUARE_1, LW_AREA_TAG_SQUARE_2
+    };
+    for (size_t i = 0; i < sizeof(tags) / sizeof(tags[0]); i++) (void)lw_mask_for_tag(tags[i]);
+}
+
+
 /* ---- AreaSingleCell.java -----------------------------------------
  *
  * @Override

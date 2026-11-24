@@ -773,7 +773,7 @@ void lw_map_compute_composantes(LwMap *self) {
     int sy = self->max_y - self->min_y + 1;
 
     /* Stack-allocated 2D scratch -- bounded by COORD_DIM. */
-    static int connexe[LW_MAP_COORD_DIM][LW_MAP_COORD_DIM];
+    int connexe[LW_MAP_COORD_DIM][LW_MAP_COORD_DIM];
 
     int x, y, x2, y2, ni = 1;
     for (x = 0; x < sx; x++) {

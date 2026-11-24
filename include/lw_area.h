@@ -106,6 +106,10 @@ typedef struct {
 } LwArea;
 
 
+/* Call once before running fights in several threads. */
+void lw_area_build_masks(void);
+
+
 /* public static Area getArea(Attack attack, byte type)
  *
  * Factory: populate `*out` from a Java-side byte type. Returns 1 on
