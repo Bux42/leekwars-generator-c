@@ -229,7 +229,9 @@ int lw_start_order_compute(LwStartOrder *self, struct LwState *state,
             int team = remaining[i];
             double p = probas[team];
 
-            if (v <= p) {
+            /* The last one left is the fallback: with rounding errors, v could be above
+             * all the probabilities and no team be picked. */
+            if (v <= p || i == n_remaining - 1) {
                 teamOrder[n_team_order++] = team;
                 /* remaining.remove(i): shift down */
                 for (int k = i; k + 1 < n_remaining; k++) {
